@@ -29,9 +29,20 @@ router.get('/', async (req, res) => {
       code: error?.code,
       meta: error?.meta,
     });
+    
+    // Erreur spécifique si les tables n'existent pas
+    if (error?.code === 'P2021' || error?.message?.includes('does not exist')) {
+      return res.status(503).json({ 
+        error: 'Les tables de la base de données n\'existent pas encore',
+        hint: 'Exécutez: npx prisma db push dans le conteneur de l\'API',
+        code: error?.code,
+      });
+    }
+    
     res.status(500).json({ 
       error: 'Erreur lors de la récupération des capteurs',
       details: process.env.NODE_ENV === 'development' ? error?.message : undefined,
+      code: error?.code,
     });
   }
 });

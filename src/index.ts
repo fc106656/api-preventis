@@ -11,6 +11,18 @@ import statsRoutes from './routes/stats';
 
 dotenv.config();
 
+// Initialiser la base de données au démarrage
+(async () => {
+  try {
+    const initializeDatabase = (await import('./db-init')).default;
+    await initializeDatabase();
+  } catch (error) {
+    console.error('Failed to initialize database:', error);
+    // Continue le démarrage même si l'init échoue
+    // (les requêtes testeront la connexion)
+  }
+})();
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
