@@ -22,9 +22,17 @@ router.get('/', async (req, res) => {
     });
 
     res.json(sensors);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching sensors:', error);
-    res.status(500).json({ error: 'Erreur lors de la récupération des capteurs' });
+    console.error('Error details:', {
+      message: error?.message,
+      code: error?.code,
+      meta: error?.meta,
+    });
+    res.status(500).json({ 
+      error: 'Erreur lors de la récupération des capteurs',
+      details: process.env.NODE_ENV === 'development' ? error?.message : undefined,
+    });
   }
 });
 

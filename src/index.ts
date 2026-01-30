@@ -39,12 +39,28 @@ app.use('/api/alarm', alarmRoutes);
 app.use('/api/stats', statsRoutes);
 
 // Route de santé
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    service: 'Preventis API',
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    // Test de connexion à la base de données
+    const prisma = (await import('./lib/prisma')).default;
+    await prisma.$queryRaw`SELECT 1`;
+    
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      service: 'Preventis API',
+      database: 'connected',
+    });
+  } catch (error: any) {
+    console.error('Database connection error:', error);
+    res.status(503).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      service: 'Preventis API',
+      database: 'disconnected',
+      error: process.env.NODE_ENV === 'development' ? error?.message : 'Database connection failed',
+    });
+  }
 });
 
 // Route racine

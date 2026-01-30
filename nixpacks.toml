@@ -12,5 +12,13 @@ cmds = [
   "npm run build"
 ]
 
+# Vérifier que Prisma client est généré
+[phases.postbuild]
+dependsOn = ["build"]
+cmds = [
+  "ls -la node_modules/.prisma/client || echo 'Prisma client not found'",
+  "npx prisma --version"
+]
+
 [start]
 cmd = "node dist/index.js"
