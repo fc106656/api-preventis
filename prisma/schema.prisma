@@ -9,7 +9,108 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Capteurs (CO2, Infrarouge, Fumée, Température)
+// Utilisateurs
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String   // Hash bcrypt
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  apiKeys  ApiKey[]
+  gateways Gateway[]
+  devices  Device[]
+
+  @@map("users")
+}
+
+// Clés API pour l'authentification des devices
+model ApiKey {
+  id        String   @id @default(uuid())
+  key       String   @unique // Clé API en clair (affichée une seule fois)
+  keyHash   String   @unique // Hash pour vérification
+  name      String   @default("Default API Key")
+  userId    String
+  lastUsedAt DateTime?
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}
+
+// Gateways (Centrales)
+model Gateway {
+  id          String   @id @default(uuid())
+  name        String   @default("Centrale principale")
+  userId      String
+  apiKeyId    String?  // Clé API utilisée par cette gateway
+  status      GatewayStatus @default(OFFLINE)
+  lastSeenAt  DateTime?
+  config      String?  @db.Text // JSON: { ip, port, apiKey, deviceIds: [] }
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  devices Device[]
+
+  @@map("gateways")
+}
+
+enum GatewayStatus {
+  ONLINE
+  OFFLINE
+  WARNING
+}
+
+// Devices (Modules/Capteurs) - Version améliorée avec userId
+model Device {
+  id          String       @id @default(uuid())
+  userId      String       // Propriétaire
+  gatewayId   String?      // Gateway associée
+  name        String
+  type        DeviceType
+  location    String
+  status      DeviceStatus @default(OFFLINE)
+  value       Float        @default(0)
+  unit        String       @default("")
+  threshold   Float
+  batteryLevel Int?
+  metadata    String?      @db.Text // JSON pour config supplémentaire
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relations
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gateway Gateway? @relation(fields: [gatewayId], references: [id], onDelete: SetNull)
+  alerts  Alert[]
+
+  @@map("devices")
+}
+
+enum DeviceType {
+  SENSOR_CO2
+  SENSOR_TEMPERATURE
+  SENSOR_INFRARED
+  SENSOR_SMOKE
+  MODULE_ALARM
+  MODULE_GATEWAY
+}
+
+// Enum pour le statut des devices (réutilisé)
+enum DeviceStatus {
+  ONLINE
+  OFFLINE
+  WARNING
+  ALERT
+}
+
+// Capteurs (CO2, Infrarouge, Fumée, Température) - Legacy, à migrer vers Device
 model Sensor {
   id           String       @id @default(uuid())
   name         String
@@ -54,12 +155,15 @@ model Alert {
   message      String     @db.Text
   location     String
   acknowledged Boolean    @default(false)
+  userId       String?    // Propriétaire de l'alerte
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
   // Relations
   sensor   Sensor? @relation(fields: [sensorId], references: [id])
   sensorId String?
+  device   Device? @relation(fields: [deviceId], references: [id])
+  deviceId String?
 
   @@map("alerts")
 }

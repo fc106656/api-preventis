@@ -3,6 +3,9 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 
 // Routes
+import authRoutes from './routes/auth';
+import gatewayRoutes from './routes/gateways';
+import deviceRoutes from './routes/devices';
 import sensorRoutes from './routes/sensors';
 import alertRoutes from './routes/alerts';
 import zoneRoutes from './routes/zones';
@@ -44,6 +47,9 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // Routes API
+app.use('/api/auth', authRoutes);
+app.use('/api/gateways', gatewayRoutes);
+app.use('/api/devices', deviceRoutes);
 app.use('/api/sensors', sensorRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/zones', zoneRoutes);
@@ -114,11 +120,14 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       health: '/api/health',
+      auth: '/api/auth',
       sensors: '/api/sensors',
       alerts: '/api/alerts',
       zones: '/api/zones',
       alarm: '/api/alarm',
       stats: '/api/stats',
+      gateways: '/api/gateways',
+      devices: '/api/devices',
     },
   });
 });
