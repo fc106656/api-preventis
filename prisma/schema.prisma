@@ -1,0 +1,122 @@
+// Schéma Prisma pour Preventis - Système de sécurité IoT
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// Capteurs (CO2, Infrarouge, Fumée, Température)
+model Sensor {
+  id           String       @id @default(uuid())
+  name         String
+  type         SensorType
+  location     String
+  status       SensorStatus @default(ONLINE)
+  value        Float        @default(0)
+  unit         String       @default("")
+  threshold    Float
+  batteryLevel Int?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  // Relations
+  zone    Zone?   @relation(fields: [zoneId], references: [id])
+  zoneId  String?
+  alerts  Alert[]
+
+  @@map("sensors")
+}
+
+enum SensorType {
+  CO2
+  INFRARED
+  SMOKE
+  TEMPERATURE
+}
+
+enum SensorStatus {
+  ONLINE
+  OFFLINE
+  WARNING
+  ALERT
+}
+
+// Alertes
+model Alert {
+  id           String     @id @default(uuid())
+  type         AlertType
+  level        AlertLevel
+  title        String
+  message      String     @db.Text
+  location     String
+  acknowledged Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Relations
+  sensor   Sensor? @relation(fields: [sensorId], references: [id])
+  sensorId String?
+
+  @@map("alerts")
+}
+
+enum AlertType {
+  FIRE
+  INTRUSION
+  SYSTEM
+}
+
+enum AlertLevel {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// Zones de surveillance
+model Zone {
+  id        String       @id @default(uuid())
+  name      String       @unique
+  status    SensorStatus @default(ONLINE)
+  isArmed   Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  // Relations
+  sensors Sensor[]
+
+  @@map("zones")
+}
+
+// État de l'alarme (singleton)
+model AlarmState {
+  id          String    @id @default("main")
+  isArmed     Boolean   @default(false)
+  mode        AlarmMode @default(OFF)
+  sirenActive Boolean   @default(false)
+  lastArmedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@map("alarm_state")
+}
+
+enum AlarmMode {
+  OFF
+  HOME
+  AWAY
+  NIGHT
+}
+
+// Historique des événements
+model EventLog {
+  id        String   @id @default(uuid())
+  type      String
+  message   String
+  data      String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@map("event_logs")
+}
