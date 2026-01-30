@@ -6,6 +6,13 @@ import { authenticateJWT, authenticateApiKey, AuthRequest } from '../middleware/
 
 const router = Router();
 
+// Helper pour convertir req.params.id en string
+function getParamId(id: string | string[] | undefined): string {
+  if (Array.isArray(id)) return id[0];
+  if (typeof id === 'string') return id;
+  throw new Error('Invalid id parameter');
+}
+
 // GET /api/gateways - Liste des gateways de l'utilisateur
 router.get('/', authenticateJWT, async (req: AuthRequest, res) => {
   try {
@@ -34,9 +41,10 @@ router.get('/', authenticateJWT, async (req: AuthRequest, res) => {
 // GET /api/gateways/:id - Détail d'une gateway
 router.get('/:id', authenticateJWT, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     const gateway = await prisma.gateway.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
       include: {
@@ -81,12 +89,13 @@ router.post('/', authenticateJWT, async (req: AuthRequest, res) => {
 // PUT /api/gateways/:id - Mettre à jour une gateway
 router.put('/:id', authenticateJWT, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     const { name, apiKeyId, config } = req.body;
 
     // Vérifier que la gateway appartient à l'utilisateur
     const existing = await prisma.gateway.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
     });
@@ -96,7 +105,7 @@ router.put('/:id', authenticateJWT, async (req: AuthRequest, res) => {
     }
 
     const gateway = await prisma.gateway.update({
-      where: { id: req.params.id },
+      where: { id },
       data: {
         ...(name && { name }),
         ...(apiKeyId !== undefined && { apiKeyId: apiKeyId || null }),
@@ -117,12 +126,13 @@ router.put('/:id', authenticateJWT, async (req: AuthRequest, res) => {
 // PUT /api/gateways/:id/config - Mettre à jour la configuration
 router.put('/:id/config', authenticateJWT, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     const { ip, port, apiKey, deviceIds } = req.body;
 
     // Vérifier que la gateway appartient à l'utilisateur
     const existing = await prisma.gateway.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
     });
@@ -139,7 +149,7 @@ router.put('/:id/config', authenticateJWT, async (req: AuthRequest, res) => {
     };
 
     const gateway = await prisma.gateway.update({
-      where: { id: req.params.id },
+      where: { id },
       data: {
         config: JSON.stringify(config),
       },
@@ -158,9 +168,10 @@ router.put('/:id/config', authenticateJWT, async (req: AuthRequest, res) => {
 // PUT /api/gateways/:id/heartbeat - Heartbeat depuis la gateway (authentification par API Key)
 router.put('/:id/heartbeat', authenticateApiKey, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     const gateway = await prisma.gateway.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
     });
@@ -170,7 +181,7 @@ router.put('/:id/heartbeat', authenticateApiKey, async (req: AuthRequest, res) =
     }
 
     const updated = await prisma.gateway.update({
-      where: { id: req.params.id },
+      where: { id },
       data: {
         status: GatewayStatus.ONLINE,
         lastSeenAt: new Date(),
@@ -187,10 +198,11 @@ router.put('/:id/heartbeat', authenticateApiKey, async (req: AuthRequest, res) =
 // DELETE /api/gateways/:id - Supprimer une gateway
 router.delete('/:id', authenticateJWT, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     // Vérifier que la gateway appartient à l'utilisateur
     const existing = await prisma.gateway.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
     });
@@ -200,7 +212,7 @@ router.delete('/:id', authenticateJWT, async (req: AuthRequest, res) => {
     }
 
     await prisma.gateway.delete({
-      where: { id: req.params.id },
+      where: { id },
     });
 
     res.json({ message: 'Gateway supprimée' });

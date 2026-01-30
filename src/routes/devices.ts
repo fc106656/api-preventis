@@ -6,10 +6,19 @@ import { authenticateJWT, authenticateApiKey, AuthRequest } from '../middleware/
 
 const router = Router();
 
+// Helper pour convertir req.params.id en string
+function getParamId(id: string | string[] | undefined): string {
+  if (Array.isArray(id)) return id[0];
+  if (typeof id === 'string') return id;
+  throw new Error('Invalid id parameter');
+}
+
 // GET /api/devices - Liste des devices de l'utilisateur
 router.get('/', authenticateJWT, async (req: AuthRequest, res) => {
   try {
-    const { type, gatewayId, status } = req.query;
+    const type = Array.isArray(req.query.type) ? req.query.type[0] : req.query.type;
+    const gatewayId = Array.isArray(req.query.gatewayId) ? req.query.gatewayId[0] : req.query.gatewayId;
+    const status = Array.isArray(req.query.status) ? req.query.status[0] : req.query.status;
 
     const devices = await prisma.device.findMany({
       where: {
@@ -39,9 +48,10 @@ router.get('/', authenticateJWT, async (req: AuthRequest, res) => {
 // GET /api/devices/:id - Détail d'un device
 router.get('/:id', authenticateJWT, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     const device = await prisma.device.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
       include: {
@@ -99,12 +109,13 @@ router.post('/', authenticateJWT, async (req: AuthRequest, res) => {
 // PUT /api/devices/:id - Mettre à jour un device
 router.put('/:id', authenticateJWT, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     const { name, type, location, status, threshold, unit, gatewayId, metadata } = req.body;
 
     // Vérifier que le device appartient à l'utilisateur
     const existing = await prisma.device.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
     });
@@ -114,7 +125,7 @@ router.put('/:id', authenticateJWT, async (req: AuthRequest, res) => {
     }
 
     const device = await prisma.device.update({
-      where: { id: req.params.id },
+      where: { id },
       data: {
         ...(name && { name }),
         ...(type && { type: type as DeviceType }),
@@ -141,7 +152,7 @@ router.put('/:id', authenticateJWT, async (req: AuthRequest, res) => {
 router.put('/:id/value', authenticateApiKey, async (req: AuthRequest, res) => {
   try {
     const { value, batteryLevel } = req.body;
-    const id = req.params.id;
+    const id = getParamId(req.params.id);
 
     const existingDevice = await prisma.device.findFirst({
       where: {
@@ -177,7 +188,11 @@ router.put('/:id/value', authenticateApiKey, async (req: AuthRequest, res) => {
       let alertType: AlertType = AlertType.SYSTEM;
       if (existingDevice.type === DeviceType.SENSOR_INFRARED) {
         alertType = AlertType.INTRUSION;
-      } else if ([DeviceType.SENSOR_CO2, DeviceType.SENSOR_SMOKE, DeviceType.SENSOR_TEMPERATURE].includes(existingDevice.type)) {
+      } else if (
+        existingDevice.type === DeviceType.SENSOR_CO2 ||
+        existingDevice.type === DeviceType.SENSOR_SMOKE ||
+        existingDevice.type === DeviceType.SENSOR_TEMPERATURE
+      ) {
         alertType = AlertType.FIRE;
       }
 
@@ -204,10 +219,11 @@ router.put('/:id/value', authenticateApiKey, async (req: AuthRequest, res) => {
 // DELETE /api/devices/:id - Supprimer un device
 router.delete('/:id', authenticateJWT, async (req: AuthRequest, res) => {
   try {
+    const id = getParamId(req.params.id);
     // Vérifier que le device appartient à l'utilisateur
     const existing = await prisma.device.findFirst({
       where: {
-        id: req.params.id,
+        id,
         userId: req.userId!,
       },
     });
@@ -217,7 +233,7 @@ router.delete('/:id', authenticateJWT, async (req: AuthRequest, res) => {
     }
 
     await prisma.device.delete({
-      where: { id: req.params.id },
+      where: { id },
     });
 
     res.json({ message: 'Device supprimé' });

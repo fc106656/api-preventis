@@ -22,7 +22,7 @@ export function generateToken(userId: string, email: string): string {
   return jwt.sign(
     { userId, email },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
+    { expiresIn: JWT_EXPIRES_IN } as jwt.SignOptions
   );
 }
 

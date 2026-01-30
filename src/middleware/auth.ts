@@ -44,7 +44,11 @@ export async function authenticateJWT(
     }
 
     req.userId = user.id;
-    req.user = user;
+    req.user = {
+      id: user.id,
+      email: user.email,
+      name: user.name || undefined,
+    };
     next();
   } catch (error) {
     console.error('Auth error:', error);
@@ -100,7 +104,11 @@ export async function authenticateOptional(
         });
         if (user) {
           req.userId = user.id;
-          req.user = user;
+          req.user = {
+            id: user.id,
+            email: user.email,
+            name: user.name || undefined,
+          };
           return next();
         }
       }

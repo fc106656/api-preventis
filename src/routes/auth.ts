@@ -209,7 +209,7 @@ router.post('/api-keys', authenticateJWT, async (req: AuthRequest, res: Response
 // DELETE /api/auth/api-keys/:id - Supprimer une clé API
 router.delete('/api-keys/:id', authenticateJWT, async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
     // Vérifier que la clé appartient à l'utilisateur
     const apiKey = await prisma.apiKey.findFirst({
