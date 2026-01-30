@@ -9,7 +9,7 @@ const router = Router();
 // POST /api/auth/register - Inscription
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { email, password, name } = req.body;
+    const { email, password, name, secretCode } = req.body;
 
     // Validation
     if (!email || !password) {
@@ -18,6 +18,12 @@ router.post('/register', async (req: Request, res: Response) => {
 
     if (password.length < 6) {
       return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
+    }
+
+    // Vérifier le code secret
+    const requiredSecretCode = process.env.REGISTRATION_SECRET_CODE || 'SECURE-POC-2026';
+    if (!secretCode || secretCode !== requiredSecretCode) {
+      return res.status(403).json({ error: 'Code secret invalide' });
     }
 
     // Vérifier si l'utilisateur existe déjà
