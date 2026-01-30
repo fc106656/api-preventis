@@ -1,0 +1,16 @@
+[phases.setup]
+nixPkgs = ["nodejs_22"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+# Générer Prisma client avant le build
+[phases.build]
+dependsOn = ["install"]
+cmds = [
+  "npx prisma generate",
+  "npm run build"
+]
+
+[start]
+cmd = "node dist/index.js"

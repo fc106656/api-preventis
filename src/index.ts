@@ -21,6 +21,8 @@ const corsOptions = {
     'http://localhost:8081',
     'https://preventis.clementfaux.fr',
     'http://preventis.clementfaux.fr',
+    'https://preventis.stark-server.fr',
+    'http://preventis.stark-server.fr',
   ],
   credentials: true,
 };
