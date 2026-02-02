@@ -6,6 +6,29 @@ import { updateDeviceValue } from './lib/deviceService';
 
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
 
+// Helper pour logger avec timestamp
+function logCoAP(message: string, data?: any) {
+  const timestamp = new Date().toISOString();
+  if (data !== undefined) {
+    console.log(`[${timestamp}] [COAP] ${message}`, JSON.stringify(data, null, 2));
+  } else {
+    console.log(`[${timestamp}] [COAP] ${message}`);
+  }
+}
+
+function errorCoAP(message: string, error?: any) {
+  const timestamp = new Date().toISOString();
+  if (error) {
+    console.error(`[${timestamp}] [COAP ERROR] ${message}`, {
+      message: error?.message,
+      stack: error?.stack,
+      ...error,
+    });
+  } else {
+    console.error(`[${timestamp}] [COAP ERROR] ${message}`);
+  }
+}
+
 // Types pour les requêtes/réponses CoAP
 type CoAPRequest = coap.IncomingMessage & {
   url: string;
@@ -28,12 +51,12 @@ function extractApiKey(req: CoAPRequest): string | null {
     const url = new URL(req.url, 'coap://localhost');
     const apiKey = url.searchParams.get('apiKey');
     if (apiKey) {
-      console.log(`🔑 CoAP: API key found in query string (length: ${apiKey.length})`);
+      logCoAP(`API key found in query string`, { length: apiKey.length });
       return apiKey;
     }
-  } catch (e) {
+  } catch (e: any) {
     // URL invalide, continuer
-    console.log(`⚠️  CoAP: Could not parse URL for API key extraction:`, e);
+    logCoAP(`Could not parse URL for API key extraction`, { error: e.message });
   }
 
   // Méthode 2: Dans le payload JSON
@@ -42,20 +65,20 @@ function extractApiKey(req: CoAPRequest): string | null {
     if (payload) {
       const data = JSON.parse(payload);
       if (data.apiKey) {
-        console.log(`🔑 CoAP: API key found in payload (length: ${data.apiKey.length})`);
+        logCoAP(`API key found in payload`, { length: data.apiKey.length });
         return data.apiKey;
       }
     }
-  } catch (e) {
+  } catch (e: any) {
     // Pas de JSON valide
-    console.log(`⚠️  CoAP: Could not parse payload for API key extraction:`, e);
+    logCoAP(`Could not parse payload for API key extraction`, { error: e.message });
   }
 
   // Méthode 3: Option CoAP personnalisée (si disponible)
   // Note: node-coap ne supporte pas facilement les options personnalisées
   // On utilisera plutôt la query string ou le payload
 
-  console.log(`❌ CoAP: No API key found in query string or payload`);
+  errorCoAP(`No API key found in query string or payload`);
   return null;
 }
 
@@ -98,8 +121,8 @@ function parseDeviceIdFromUrl(url: string): string | null {
         return deviceId;
       }
     }
-  } catch (e) {
-    console.error('Error parsing URL:', e);
+  } catch (e: any) {
+    errorCoAP('Error parsing URL', e);
   }
   return null;
 }
@@ -110,16 +133,17 @@ function parseDeviceIdFromUrl(url: string): string | null {
 export function createCoAPServer() {
   const server = coap.createServer((req: CoAPRequest, res: CoAPResponse) => {
     const rsinfo = req.rsinfo as { address: string; port: number; family?: string };
-    console.log(`📡 CoAP request: ${req.method} ${req.url} from ${rsinfo.address}:${rsinfo.port}`);
-    
-    // Log du payload brut
     const payloadRaw = req.payload ? req.payload.toString() : '';
-    console.log(`📦 CoAP payload (raw):`, payloadRaw || '(empty)');
-    console.log(`📦 CoAP payload (length):`, req.payload ? req.payload.length : 0, 'bytes');
+    
+    logCoAP(`REQUEST: ${req.method} ${req.url}`, {
+      from: `${rsinfo.address}:${rsinfo.port}`,
+      payloadRaw: payloadRaw || '(empty)',
+      payloadLength: req.payload ? req.payload.length : 0,
+    });
 
     // Seulement POST est supporté pour l'instant (mise à jour de valeur)
     if (req.method !== 'POST') {
-      console.log(`❌ CoAP: Method not allowed: ${req.method}`);
+      errorCoAP(`Method not allowed: ${req.method}`);
       res.code = '4.05'; // Method Not Allowed
       res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
       return;
@@ -127,9 +151,9 @@ export function createCoAPServer() {
 
     // Route: POST /devices/:id/value
     const deviceId = parseDeviceIdFromUrl(req.url);
-    console.log(`🔍 CoAP: Parsed deviceId from URL:`, deviceId);
+    logCoAP(`Parsed deviceId from URL: ${deviceId || 'NOT FOUND'}`);
     if (!deviceId) {
-      console.log(`❌ CoAP: Invalid route: ${req.url}`);
+      errorCoAP(`Invalid route: ${req.url}`);
       res.code = '4.04'; // Not Found
       res.end(JSON.stringify({ error: 'Invalid route. Use POST /devices/{id}/value' }));
       return;
@@ -139,12 +163,12 @@ export function createCoAPServer() {
     authenticateCoAPRequest(req)
       .then((auth) => {
         if (!auth) {
-          console.log(`❌ CoAP: Authentication failed for device ${deviceId}`);
+          errorCoAP(`Authentication failed for device ${deviceId}`);
           res.code = '4.01'; // Unauthorized
           res.end(JSON.stringify({ error: 'API key missing or invalid. Provide ?apiKey=... in URL or in payload.' }));
           return;
         }
-        console.log(`✅ CoAP: Authentication successful for userId: ${auth.userId}`);
+        logCoAP(`Authentication successful`, { userId: auth.userId, deviceId });
 
         // Parser le payload
         let payloadData: any;
@@ -153,14 +177,13 @@ export function createCoAPServer() {
           const payloadStr = req.payload ? req.payload.toString() : '{}';
           if (!payloadStr || payloadStr.trim() === '') {
             payloadData = {};
-            console.log(`📋 CoAP: Empty payload, using default {}`);
+            logCoAP(`Empty payload, using default {}`);
           } else {
             payloadData = JSON.parse(payloadStr);
-            console.log(`📋 CoAP: Parsed payload:`, JSON.stringify(payloadData));
+            logCoAP(`Parsed payload`, payloadData);
           }
-        } catch (e) {
-          console.error('❌ CoAP: Error parsing payload:', e);
-          console.error('❌ CoAP: Payload string was:', payloadRaw);
+        } catch (e: any) {
+          errorCoAP(`Error parsing payload`, { error: e.message, payloadRaw });
           res.code = '4.00'; // Bad Request
           res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
           return;
@@ -168,13 +191,10 @@ export function createCoAPServer() {
 
         // Extraire value et batteryLevel, en excluant apiKey du payload si présent
         const { value, batteryLevel, apiKey: _apiKey, ...rest } = payloadData;
-        console.log(`📊 CoAP: Extracted values - value: ${value}, batteryLevel: ${batteryLevel}`);
-        if (Object.keys(rest).length > 0) {
-          console.log(`⚠️  CoAP: Additional payload fields (ignored):`, Object.keys(rest));
-        }
+        logCoAP(`Extracted values`, { value, batteryLevel, ignoredFields: Object.keys(rest) });
 
         if (value === undefined || value === null) {
-          console.log(`❌ CoAP: Missing required field 'value' in payload`);
+          errorCoAP(`Missing required field 'value' in payload`, { payloadData });
           res.code = '4.00'; // Bad Request
           res.end(JSON.stringify({ error: 'Missing required field: value' }));
           return;
@@ -182,7 +202,7 @@ export function createCoAPServer() {
 
         const parsedValue = parseFloat(String(value));
         const parsedBattery = batteryLevel !== undefined ? parseInt(String(batteryLevel)) : undefined;
-        console.log(`🔄 CoAP: Updating device ${deviceId} with value=${parsedValue}, batteryLevel=${parsedBattery}`);
+        logCoAP(`Updating device`, { deviceId, value: parsedValue, batteryLevel: parsedBattery });
 
         // Mettre à jour la valeur du device
         updateDeviceValue({
@@ -193,14 +213,18 @@ export function createCoAPServer() {
         })
           .then((result) => {
             if (!result.success) {
-              console.log(`❌ CoAP: Update failed for device ${deviceId}:`, result.error);
+              errorCoAP(`Update failed for device ${deviceId}`, { error: result.error });
               res.code = result.error === 'Device non trouvé' ? '4.04' : '5.00'; // Not Found ou Internal Server Error
               res.end(JSON.stringify({ error: result.error || 'Error updating device' }));
               return;
             }
 
             // Succès
-            console.log(`✅ CoAP: Device ${deviceId} updated successfully - value: ${result.device?.value}, status: ${result.device?.status}`);
+            logCoAP(`Device updated successfully`, {
+              deviceId: result.device?.id,
+              value: result.device?.value,
+              status: result.device?.status,
+            });
             res.code = '2.04'; // Changed
             res.end(JSON.stringify({
               success: true,
@@ -212,15 +236,13 @@ export function createCoAPServer() {
             }));
           })
           .catch((error) => {
-            console.error('❌ CoAP: Error in updateDeviceValue:', error);
-            console.error('❌ CoAP: Error stack:', error.stack);
+            errorCoAP(`Error in updateDeviceValue`, error);
             res.code = '5.00'; // Internal Server Error
             res.end(JSON.stringify({ error: 'Internal server error' }));
           });
       })
       .catch((error) => {
-        console.error('❌ CoAP: Error in authentication:', error);
-        console.error('❌ CoAP: Auth error stack:', error.stack);
+        errorCoAP(`Error in authentication`, error);
         res.code = '5.00'; // Internal Server Error
         res.end(JSON.stringify({ error: 'Authentication error' }));
       });
