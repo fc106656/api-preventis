@@ -139,10 +139,21 @@ app.get('/', (req, res) => {
   });
 });
 
-// Démarrage du serveur
+// Démarrage du serveur HTTP
 app.listen(PORT, () => {
-  console.log(`🚀 Preventis API running on http://localhost:${PORT}`);
+  console.log(`🚀 Preventis API (HTTP) running on http://localhost:${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
 });
+
+// Démarrage du serveur CoAP
+(async () => {
+  try {
+    const { createCoAPServer } = await import('./coap-server');
+    createCoAPServer();
+  } catch (error) {
+    console.error('❌ Failed to start CoAP server:', error);
+    console.warn('⚠️  CoAP server will not be available, but HTTP API will continue to work');
+  }
+})();
 
 export default app;

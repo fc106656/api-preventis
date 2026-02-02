@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { DeviceType, DeviceStatus, AlertType, AlertLevel } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { authenticateJWT, authenticateApiKey, AuthRequest } from '../middleware/auth';
+import { updateDeviceValue } from '../lib/deviceService';
 
 const router = Router();
 
@@ -154,62 +155,24 @@ router.put('/:id/value', authenticateApiKey, async (req: AuthRequest, res) => {
     const { value, batteryLevel } = req.body;
     const id = getParamId(req.params.id);
 
-    const existingDevice = await prisma.device.findFirst({
-      where: {
-        id,
-        userId: req.userId!, // Vérifier que le device appartient à l'utilisateur de la clé API
-      },
-    });
-
-    if (!existingDevice) {
-      return res.status(404).json({ error: 'Device non trouvé' });
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Non authentifié' });
     }
 
-    // Déterminer le statut basé sur la valeur
-    let newStatus: DeviceStatus = DeviceStatus.ONLINE;
-    const numValue = parseFloat(value);
-    if (numValue >= existingDevice.threshold) {
-      newStatus = DeviceStatus.ALERT;
-    } else if (numValue >= existingDevice.threshold * 0.8) {
-      newStatus = DeviceStatus.WARNING;
-    }
-
-    const device = await prisma.device.update({
-      where: { id },
-      data: {
-        value: numValue,
-        status: newStatus,
-        ...(batteryLevel !== undefined && { batteryLevel: parseInt(batteryLevel) }),
-      },
+    const result = await updateDeviceValue({
+      deviceId: id,
+      userId: req.userId,
+      value: parseFloat(value),
+      batteryLevel: batteryLevel !== undefined ? parseInt(String(batteryLevel)) : undefined,
     });
 
-    // Créer une alerte si seuil dépassé
-    if (newStatus === DeviceStatus.ALERT && existingDevice.status !== DeviceStatus.ALERT) {
-      let alertType: AlertType = AlertType.SYSTEM;
-      if (existingDevice.type === DeviceType.SENSOR_INFRARED) {
-        alertType = AlertType.INTRUSION;
-      } else if (
-        existingDevice.type === DeviceType.SENSOR_CO2 ||
-        existingDevice.type === DeviceType.SENSOR_SMOKE ||
-        existingDevice.type === DeviceType.SENSOR_TEMPERATURE
-      ) {
-        alertType = AlertType.FIRE;
-      }
-
-      await prisma.alert.create({
-        data: {
-          type: alertType,
-          level: AlertLevel.CRITICAL,
-          title: `Alerte ${existingDevice.type} - ${existingDevice.name}`,
-          message: `Seuil dépassé: ${numValue} ${existingDevice.unit}`,
-          location: existingDevice.location,
-          deviceId: id,
-          userId: req.userId!,
-        },
+    if (!result.success) {
+      return res.status(result.error === 'Device non trouvé' ? 404 : 500).json({
+        error: result.error || 'Erreur lors de la mise à jour',
       });
     }
 
-    res.json(device);
+    res.json(result.device);
   } catch (error: any) {
     console.error('Error updating device value:', error);
     res.status(500).json({ error: 'Erreur lors de la mise à jour' });

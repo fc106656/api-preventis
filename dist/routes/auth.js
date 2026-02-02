@@ -1,0 +1,254 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+// Routes d'authentification
+const express_1 = require("express");
+const auth_1 = require("../lib/auth");
+const prisma_1 = __importDefault(require("../lib/prisma"));
+const auth_2 = require("../middleware/auth");
+const router = (0, express_1.Router)();
+// POST /api/auth/register - Inscription
+router.post('/register', async (req, res) => {
+    try {
+        const { email, password, name, secretCode } = req.body;
+        // Validation
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email et mot de passe requis' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
+        }
+        // Vérifier le code secret
+        const requiredSecretCode = process.env.REGISTRATION_SECRET_CODE || 'SECURE-POC-2026';
+        console.log('Register attempt:', { email, hasSecretCode: !!secretCode, secretCodeMatch: secretCode === requiredSecretCode });
+        if (!secretCode || secretCode !== requiredSecretCode) {
+            return res.status(403).json({ error: 'Code secret invalide' });
+        }
+        // Vérifier si l'utilisateur existe déjà
+        const existingUser = await prisma_1.default.user.findUnique({
+            where: { email },
+        });
+        if (existingUser) {
+            return res.status(409).json({ error: 'Cet email est déjà utilisé' });
+        }
+        // Créer l'utilisateur
+        const passwordHash = await (0, auth_1.hashPassword)(password);
+        console.log('Creating user...');
+        const user = await prisma_1.default.user.create({
+            data: {
+                email,
+                password: passwordHash,
+                name: name || null,
+            },
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                createdAt: true,
+            },
+        });
+        console.log('User created:', user.id);
+        // Générer une clé API par défaut
+        const apiKey = (0, auth_1.generateApiKey)();
+        const apiKeyHash = (0, auth_1.hashApiKey)(apiKey);
+        console.log('Creating API key...');
+        const createdApiKey = await prisma_1.default.apiKey.create({
+            data: {
+                key: apiKey,
+                keyHash: apiKeyHash,
+                name: 'Clé API par défaut',
+                userId: user.id,
+            },
+        });
+        console.log('API key created:', createdApiKey.id);
+        // Créer une gateway par défaut
+        console.log('Creating gateway...');
+        await prisma_1.default.gateway.create({
+            data: {
+                name: 'Centrale principale',
+                userId: user.id,
+                apiKeyId: createdApiKey.id, // Lier la gateway à la clé API
+            },
+        });
+        console.log('Gateway created');
+        // Générer un token JWT
+        const token = (0, auth_1.generateToken)(user.id, user.email);
+        res.status(201).json({
+            user,
+            token,
+            apiKey, // Afficher la clé API une seule fois
+            message: 'Compte créé avec succès. Notez votre clé API, elle ne sera plus affichée.',
+        });
+    }
+    catch (error) {
+        console.error('Register error:', error);
+        console.error('Register error details:', {
+            message: error?.message,
+            code: error?.code,
+            meta: error?.meta,
+            stack: error?.stack,
+        });
+        // Retourner plus de détails pour aider au debug
+        // Toujours inclure les détails pour les erreurs Prisma (codes P*)
+        const errorResponse = {
+            error: 'Erreur lors de l\'inscription',
+        };
+        // Toujours inclure les détails pour les erreurs Prisma (codes P*)
+        // ou si on est en développement
+        const isPrismaError = error?.code?.startsWith('P');
+        const isDev = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+        if (isPrismaError || isDev) {
+            errorResponse.details = error?.message || String(error);
+            errorResponse.code = error?.code;
+            if (error?.meta) {
+                errorResponse.meta = error?.meta;
+            }
+        }
+        // En production, toujours inclure au moins le code d'erreur Prisma
+        if (isPrismaError && !isDev) {
+            errorResponse.code = error?.code;
+            errorResponse.details = error?.message;
+        }
+        res.status(500).json(errorResponse);
+    }
+});
+// POST /api/auth/login - Connexion
+router.post('/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        // Validation
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email et mot de passe requis' });
+        }
+        // Trouver l'utilisateur
+        const user = await prisma_1.default.user.findUnique({
+            where: { email },
+        });
+        if (!user) {
+            return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+        }
+        // Vérifier le mot de passe
+        const isValid = await (0, auth_1.verifyPassword)(password, user.password);
+        if (!isValid) {
+            return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+        }
+        // Générer un token JWT
+        const token = (0, auth_1.generateToken)(user.id, user.email);
+        res.json({
+            user: {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+            },
+            token,
+        });
+    }
+    catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Erreur lors de la connexion' });
+    }
+});
+// GET /api/auth/me - Récupérer l'utilisateur connecté
+router.get('/me', auth_2.authenticateJWT, async (req, res) => {
+    try {
+        const user = await prisma_1.default.user.findUnique({
+            where: { id: req.userId },
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                createdAt: true,
+            },
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'Utilisateur non trouvé' });
+        }
+        res.json({ user });
+    }
+    catch (error) {
+        console.error('Get me error:', error);
+        res.status(500).json({ error: 'Erreur' });
+    }
+});
+// GET /api/auth/api-keys - Liste des clés API
+router.get('/api-keys', auth_2.authenticateJWT, async (req, res) => {
+    try {
+        const apiKeys = await prisma_1.default.apiKey.findMany({
+            where: { userId: req.userId },
+            select: {
+                id: true,
+                name: true,
+                lastUsedAt: true,
+                expiresAt: true,
+                createdAt: true,
+                // Ne pas exposer la clé en clair
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json({ apiKeys });
+    }
+    catch (error) {
+        console.error('Get API keys error:', error);
+        res.status(500).json({ error: 'Erreur' });
+    }
+});
+// POST /api/auth/api-keys - Créer une nouvelle clé API
+router.post('/api-keys', auth_2.authenticateJWT, async (req, res) => {
+    try {
+        const { name } = req.body;
+        const apiKey = (0, auth_1.generateApiKey)();
+        const apiKeyHash = (0, auth_1.hashApiKey)(apiKey);
+        const created = await prisma_1.default.apiKey.create({
+            data: {
+                key: apiKey,
+                keyHash: apiKeyHash,
+                name: name || 'Nouvelle clé API',
+                userId: req.userId,
+            },
+            select: {
+                id: true,
+                name: true,
+                createdAt: true,
+            },
+        });
+        res.status(201).json({
+            apiKey: {
+                ...created,
+                key: apiKey, // Afficher la clé une seule fois
+            },
+            message: 'Clé API créée. Notez-la, elle ne sera plus affichée.',
+        });
+    }
+    catch (error) {
+        console.error('Create API key error:', error);
+        res.status(500).json({ error: 'Erreur' });
+    }
+});
+// DELETE /api/auth/api-keys/:id - Supprimer une clé API
+router.delete('/api-keys/:id', auth_2.authenticateJWT, async (req, res) => {
+    try {
+        const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+        // Vérifier que la clé appartient à l'utilisateur
+        const apiKey = await prisma_1.default.apiKey.findFirst({
+            where: {
+                id,
+                userId: req.userId,
+            },
+        });
+        if (!apiKey) {
+            return res.status(404).json({ error: 'Clé API non trouvée' });
+        }
+        await prisma_1.default.apiKey.delete({
+            where: { id },
+        });
+        res.json({ message: 'Clé API supprimée' });
+    }
+    catch (error) {
+        console.error('Delete API key error:', error);
+        res.status(500).json({ error: 'Erreur' });
+    }
+});
+exports.default = router;
+//# sourceMappingURL=auth.js.map
