@@ -22,6 +22,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
     // Vérifier le code secret
     const requiredSecretCode = process.env.REGISTRATION_SECRET_CODE || 'SECURE-POC-2026';
+    console.log('Register attempt:', { email, hasSecretCode: !!secretCode, secretCodeMatch: secretCode === requiredSecretCode });
     if (!secretCode || secretCode !== requiredSecretCode) {
       return res.status(403).json({ error: 'Code secret invalide' });
     }
@@ -37,6 +38,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
     // Créer l'utilisateur
     const passwordHash = await hashPassword(password);
+    console.log('Creating user...');
     const user = await prisma.user.create({
       data: {
         email,
@@ -50,12 +52,13 @@ router.post('/register', async (req: Request, res: Response) => {
         createdAt: true,
       },
     });
+    console.log('User created:', user.id);
 
     // Générer une clé API par défaut
     const apiKey = generateApiKey();
     const apiKeyHash = hashApiKey(apiKey);
-
-    await prisma.apiKey.create({
+    console.log('Creating API key...');
+    const createdApiKey = await prisma.apiKey.create({
       data: {
         key: apiKey,
         keyHash: apiKeyHash,
@@ -63,14 +66,18 @@ router.post('/register', async (req: Request, res: Response) => {
         userId: user.id,
       },
     });
+    console.log('API key created:', createdApiKey.id);
 
     // Créer une gateway par défaut
+    console.log('Creating gateway...');
     await prisma.gateway.create({
       data: {
         name: 'Centrale principale',
         userId: user.id,
+        apiKeyId: createdApiKey.id, // Lier la gateway à la clé API
       },
     });
+    console.log('Gateway created');
 
     // Générer un token JWT
     const token = generateToken(user.id, user.email);
@@ -83,7 +90,39 @@ router.post('/register', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Register error:', error);
-    res.status(500).json({ error: 'Erreur lors de l\'inscription' });
+    console.error('Register error details:', {
+      message: error?.message,
+      code: error?.code,
+      meta: error?.meta,
+      stack: error?.stack,
+    });
+    
+    // Retourner plus de détails pour aider au debug
+    // Toujours inclure les détails pour les erreurs Prisma (codes P*)
+    const errorResponse: any = { 
+      error: 'Erreur lors de l\'inscription',
+    };
+    
+    // Toujours inclure les détails pour les erreurs Prisma (codes P*)
+    // ou si on est en développement
+    const isPrismaError = error?.code?.startsWith('P');
+    const isDev = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+    
+    if (isPrismaError || isDev) {
+      errorResponse.details = error?.message || String(error);
+      errorResponse.code = error?.code;
+      if (error?.meta) {
+        errorResponse.meta = error?.meta;
+      }
+    }
+    
+    // En production, toujours inclure au moins le code d'erreur Prisma
+    if (isPrismaError && !isDev) {
+      errorResponse.code = error?.code;
+      errorResponse.details = error?.message;
+    }
+    
+    res.status(500).json(errorResponse);
   }
 });
 

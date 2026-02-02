@@ -14,20 +14,27 @@ import statsRoutes from './routes/stats';
 
 dotenv.config();
 
-// Initialiser la base de données au démarrage
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Initialiser la base de données au démarrage (avant de démarrer le serveur)
 (async () => {
   try {
+    console.log('🔧 Initializing database...');
     const initializeDatabase = (await import('./db-init')).default;
-    await initializeDatabase();
+    const success = await initializeDatabase();
+    if (success) {
+      console.log('✅ Database initialization completed');
+    } else {
+      console.warn('⚠️  Database initialization had issues, but continuing...');
+    }
   } catch (error) {
-    console.error('Failed to initialize database:', error);
+    console.error('❌ Failed to initialize database:', error);
+    console.error('⚠️  API will start anyway, but database operations may fail');
     // Continue le démarrage même si l'init échoue
     // (les requêtes testeront la connexion)
   }
 })();
-
-const app = express();
-const PORT = process.env.PORT || 3001;
 
 // Configuration CORS
 const corsOptions = {
@@ -63,12 +70,12 @@ app.get('/api/health', async (req, res) => {
     const prisma = (await import('./lib/prisma')).default;
     await prisma.$queryRaw`SELECT 1`;
     
-    res.json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      service: 'Preventis API',
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    service: 'Preventis API',
       database: 'connected',
-    });
+  });
   } catch (error: any) {
     console.error('Database connection error:', error);
     console.error('Error code:', error?.code);
