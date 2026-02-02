@@ -25,16 +25,25 @@ Si vous ne voyez pas ce message, le serveur CoAP ne démarre pas (erreur au dém
 Dans la configuration de votre application API dans Coolify :
 
 1. **Network Ports** :
-   - Ajouter un nouveau port mapping
-   - **Port interne** : `5683`
-   - **Port externe** : `5683` (ou autre si vous préférez)
-   - **Type** : **UDP** (important !)
-   - **Expose** : Oui
+   - **Ports Exposes** : `3001, 5683` ✅ (vous l'avez déjà)
+   - **Port Mappings** : Ajouter `5683:5683`
+     - **Important** : Spécifier que c'est **UDP** (pas TCP)
+     - Format : `5683:5683/udp` ou via l'interface si disponible
 
-2. **Si Coolify ne permet pas de choisir UDP** :
-   - Certaines versions de Coolify n'ont pas d'option UDP dans l'interface
-   - Il faut peut-être configurer manuellement via Docker ou les variables d'environnement
-   - Alternative : Utiliser HTTP à la place (fonctionne déjà)
+2. **Via Custom Docker Options** (si l'interface ne permet pas UDP) :
+   - Ajouter dans **Custom Docker Options** :
+   ```
+   -p 5683:5683/udp
+   ```
+   - Votre configuration complète devrait être :
+   ```
+   --cap-add SYS_ADMIN --device=/dev/fuse --security-opt apparmor:unconfined --ulimit nofile=1024:1024 --tmpfs /run:rw,noexec,nosuid,size=65536k --hostname=myapp -p 5683:5683/udp
+   ```
+
+3. **Vérifier le firewall du serveur** :
+   ```bash
+   sudo ufw allow 5683/udp
+   ```
 
 ### 3. Vérifier le firewall du serveur
 
