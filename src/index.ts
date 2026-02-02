@@ -148,10 +148,13 @@ app.listen(PORT, () => {
 // Démarrage du serveur CoAP
 (async () => {
   try {
+    console.log('🔧 Initializing CoAP server...');
     const { createCoAPServer } = await import('./coap-server');
-    createCoAPServer();
-  } catch (error) {
+    const coapServer = createCoAPServer();
+    console.log('✅ CoAP server initialization completed');
+  } catch (error: any) {
     console.error('❌ Failed to start CoAP server:', error);
+    console.error('   Error details:', error?.message, error?.stack);
     console.warn('⚠️  CoAP server will not be available, but HTTP API will continue to work');
   }
 })();

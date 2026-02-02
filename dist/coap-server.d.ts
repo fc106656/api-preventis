@@ -1,4 +1,4 @@
-import coap from 'coap';
+import * as coap from 'coap';
 /**
  * Crée et démarre le serveur CoAP
  */

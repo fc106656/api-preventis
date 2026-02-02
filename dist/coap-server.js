@@ -1,12 +1,42 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createCoAPServer = createCoAPServer;
 // Serveur CoAP pour Preventis
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
-const coap_1 = __importDefault(require("coap"));
+const coap = __importStar(require("coap"));
 const auth_1 = require("./lib/auth");
 const deviceService_1 = require("./lib/deviceService");
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
@@ -89,7 +119,7 @@ function parseDeviceIdFromUrl(url) {
  * Crée et démarre le serveur CoAP
  */
 function createCoAPServer() {
-    const server = coap_1.default.createServer((req, res) => {
+    const server = coap.createServer((req, res) => {
         const rsinfo = req.rsinfo;
         console.log(`📡 CoAP request: ${req.method} ${req.url} from ${rsinfo.address}:${rsinfo.port}`);
         // Seulement POST est supporté pour l'instant (mise à jour de valeur)
@@ -116,15 +146,23 @@ function createCoAPServer() {
             // Parser le payload
             let payloadData;
             try {
-                const payloadStr = req.payload.toString();
-                payloadData = JSON.parse(payloadStr);
+                // Le payload peut être vide ou un Buffer
+                const payloadStr = req.payload ? req.payload.toString() : '{}';
+                if (!payloadStr || payloadStr.trim() === '') {
+                    payloadData = {};
+                }
+                else {
+                    payloadData = JSON.parse(payloadStr);
+                }
             }
             catch (e) {
+                console.error('Error parsing CoAP payload:', e);
                 res.code = '4.00'; // Bad Request
                 res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
                 return;
             }
-            const { value, batteryLevel } = payloadData;
+            // Extraire value et batteryLevel, en excluant apiKey du payload si présent
+            const { value, batteryLevel, apiKey: _apiKey, ...rest } = payloadData;
             if (value === undefined || value === null) {
                 res.code = '4.00'; // Bad Request
                 res.end(JSON.stringify({ error: 'Missing required field: value' }));
@@ -167,10 +205,16 @@ function createCoAPServer() {
         });
     });
     server.listen(COAP_PORT, () => {
-        console.log(`📡 CoAP server listening on port ${COAP_PORT}`);
+        console.log(`📡 CoAP server listening on port ${COAP_PORT} (UDP)`);
         console.log(`   Endpoint: coap://0.0.0.0:${COAP_PORT}/devices/{deviceId}/value`);
         console.log(`   Method: POST`);
         console.log(`   Auth: API key via ?apiKey=... or in payload`);
+        console.log(`   ✅ CoAP server is ready to receive requests`);
+        console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
+    });
+    server.on('error', (err) => {
+        console.error('❌ CoAP server error:', err);
+        console.error('   This usually means the port is already in use or not accessible');
     });
     return server;
 }

@@ -1,6 +1,6 @@
 // Serveur CoAP pour Preventis
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
-import coap from 'coap';
+import * as coap from 'coap';
 import { verifyApiKey } from './lib/auth';
 import { updateDeviceValue } from './lib/deviceService';
 
@@ -192,10 +192,17 @@ export function createCoAPServer() {
   });
 
   server.listen(COAP_PORT, () => {
-    console.log(`📡 CoAP server listening on port ${COAP_PORT}`);
+    console.log(`📡 CoAP server listening on port ${COAP_PORT} (UDP)`);
     console.log(`   Endpoint: coap://0.0.0.0:${COAP_PORT}/devices/{deviceId}/value`);
     console.log(`   Method: POST`);
     console.log(`   Auth: API key via ?apiKey=... or in payload`);
+    console.log(`   ✅ CoAP server is ready to receive requests`);
+    console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
+  });
+
+  server.on('error', (err: any) => {
+    console.error('❌ CoAP server error:', err);
+    console.error('   This usually means the port is already in use or not accessible');
   });
 
   return server;
