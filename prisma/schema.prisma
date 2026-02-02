@@ -89,6 +89,7 @@ model Device {
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   gateway Gateway? @relation(fields: [gatewayId], references: [id], onDelete: SetNull)
   alerts  Alert[]
+  valueHistory DeviceValueHistory[]
 
   @@map("devices")
 }
@@ -212,6 +213,22 @@ enum AlarmMode {
   HOME
   AWAY
   NIGHT
+}
+
+// Historique des valeurs des devices
+model DeviceValueHistory {
+  id        String   @id @default(uuid())
+  deviceId  String
+  value     Float
+  batteryLevel Int?
+  status    DeviceStatus
+  createdAt DateTime @default(now())
+
+  // Relations
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, createdAt])
+  @@map("device_value_history")
 }
 
 // Historique des événements

@@ -30,7 +30,8 @@ async function initializeDatabase() {
     // Liste de toutes les tables requises selon le schéma Prisma
     const requiredTables = [
       'users', 'api_keys', 'gateways', 'devices', 
-      'sensors', 'alerts', 'zones', 'alarm_state', 'event_logs'
+      'sensors', 'alerts', 'zones', 'alarm_state', 'event_logs',
+      'device_value_history' // Historique des valeurs des devices
     ];
     
     try {
@@ -49,6 +50,11 @@ async function initializeDatabase() {
         console.log('✅ Database schema created successfully');
       } else {
         console.log('✅ All required tables exist');
+        // Toujours synchroniser le schéma pour s'assurer qu'il est à jour
+        // (prisma db push est idempotent, donc pas de problème si déjà à jour)
+        console.log('🔄 Synchronizing database schema...');
+        await createSchema();
+        console.log('✅ Database schema synchronized');
       }
       
       return true;

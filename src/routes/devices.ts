@@ -14,6 +14,33 @@ function getParamId(id: string | string[] | undefined): string {
   throw new Error('Invalid id parameter');
 }
 
+// Seuil de timeout pour considérer un device comme OFFLINE (1 minute)
+// Pour un système IoT en temps réel, on veut détecter rapidement les déconnexions
+const DEVICE_TIMEOUT_MS = 1 * 60 * 1000; // 1 minute en millisecondes
+
+/**
+ * Vérifie si un device doit être considéré comme OFFLINE
+ * et met à jour son statut si nécessaire
+ */
+async function checkAndUpdateDeviceStatus(device: any): Promise<any> {
+  const now = new Date();
+  const updatedAt = new Date(device.updatedAt);
+  const timeSinceUpdate = now.getTime() - updatedAt.getTime();
+
+  // Si le device n'a pas été mis à jour depuis plus de 1 minute
+  // et qu'il n'est pas déjà en ALERT ou WARNING, le mettre en OFFLINE
+  if (timeSinceUpdate > DEVICE_TIMEOUT_MS && device.status !== DeviceStatus.ALERT && device.status !== DeviceStatus.WARNING) {
+    // Mettre à jour le statut en base de données
+    const updated = await prisma.device.update({
+      where: { id: device.id },
+      data: { status: DeviceStatus.OFFLINE },
+    });
+    return { ...device, status: DeviceStatus.OFFLINE };
+  }
+
+  return device;
+}
+
 // GET /api/devices - Liste des devices de l'utilisateur
 router.get('/', authenticateJWT, async (req: AuthRequest, res) => {
   try {
@@ -39,7 +66,12 @@ router.get('/', authenticateJWT, async (req: AuthRequest, res) => {
       orderBy: { createdAt: 'desc' },
     });
 
-    res.json(devices);
+    // Vérifier et mettre à jour le statut de chaque device
+    const devicesWithUpdatedStatus = await Promise.all(
+      devices.map(device => checkAndUpdateDeviceStatus(device))
+    );
+
+    res.json(devicesWithUpdatedStatus);
   } catch (error: any) {
     console.error('Error fetching devices:', error);
     res.status(500).json({ error: 'Erreur lors de la récupération des devices' });
@@ -68,7 +100,10 @@ router.get('/:id', authenticateJWT, async (req: AuthRequest, res) => {
       return res.status(404).json({ error: 'Device non trouvé' });
     }
 
-    res.json(device);
+    // Vérifier et mettre à jour le statut si nécessaire
+    const deviceWithUpdatedStatus = await checkAndUpdateDeviceStatus(device);
+
+    res.json(deviceWithUpdatedStatus);
   } catch (error: any) {
     console.error('Error fetching device:', error);
     res.status(500).json({ error: 'Erreur' });
@@ -176,6 +211,75 @@ router.put('/:id/value', authenticateApiKey, async (req: AuthRequest, res) => {
   } catch (error: any) {
     console.error('Error updating device value:', error);
     res.status(500).json({ error: 'Erreur lors de la mise à jour' });
+  }
+});
+
+// GET /api/devices/:id/history - Historique des valeurs d'un device
+router.get('/:id/history', authenticateJWT, async (req: AuthRequest, res) => {
+  try {
+    const id = getParamId(req.params.id);
+    const period = Array.isArray(req.query.period) ? req.query.period[0] : req.query.period || '1h';
+    
+    // Vérifier que le device appartient à l'utilisateur
+    const device = await prisma.device.findFirst({
+      where: {
+        id,
+        userId: req.userId!,
+      },
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Device non trouvé' });
+    }
+
+    // Calculer la date de début selon la période
+    const now = new Date();
+    let startDate = new Date();
+    
+    switch (period) {
+      case '15m':
+        startDate = new Date(now.getTime() - 15 * 60 * 1000);
+        break;
+      case '1h':
+        startDate = new Date(now.getTime() - 60 * 60 * 1000);
+        break;
+      case '6h':
+        startDate = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+        break;
+      case '24h':
+        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case '7d':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      default:
+        startDate = new Date(now.getTime() - 60 * 60 * 1000); // 1h par défaut
+    }
+
+    // Récupérer l'historique
+    const history = await prisma.deviceValueHistory.findMany({
+      where: {
+        deviceId: id,
+        createdAt: {
+          gte: startDate,
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      select: {
+        id: true,
+        value: true,
+        batteryLevel: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+
+    res.json(history);
+  } catch (error: any) {
+    console.error('Error fetching device history:', error);
+    res.status(500).json({ error: 'Erreur lors de la récupération de l\'historique' });
   }
 });
 
