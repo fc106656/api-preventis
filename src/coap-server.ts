@@ -1,61 +1,42 @@
 // Serveur CoAP pour Preventis
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
 import * as coap from 'coap';
-import * as fs from 'fs';
-import * as path from 'path';
 import { verifyApiKey } from './lib/auth';
 import { updateDeviceValue } from './lib/deviceService';
+import prisma from './lib/prisma';
 
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
 
-// Configuration du fichier de log
-const LOG_DIR = path.join(process.cwd(), 'logs');
-const LOG_FILE = path.join(LOG_DIR, 'coap.log');
-const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB max par fichier
-
-// Créer le dossier logs s'il n'existe pas
-if (!fs.existsSync(LOG_DIR)) {
-  fs.mkdirSync(LOG_DIR, { recursive: true });
-}
-
-// Fonction pour écrire dans le fichier de log
-function writeToLogFile(level: 'INFO' | 'ERROR', message: string, data?: any) {
+// Fonction pour écrire dans la table EventLog (base de données)
+async function writeToDatabaseLog(level: 'INFO' | 'ERROR', message: string, data?: any) {
   try {
-    const timestamp = new Date().toISOString();
-    let logEntry = `[${timestamp}] [${level}] ${message}\n`;
+    let dataStr: string | null = null;
     
     if (data !== undefined) {
       try {
-        const dataStr = typeof data === 'string' 
+        dataStr = typeof data === 'string' 
           ? data 
           : JSON.stringify(data, null, 2);
-        logEntry += `${dataStr}\n`;
       } catch (e) {
-        logEntry += `[Data serialization error: ${e}]\n`;
+        dataStr = `[Data serialization error: ${e}]`;
       }
     }
     
-    logEntry += '---\n';
-    
-    // Vérifier la taille du fichier et le roter si nécessaire
-    if (fs.existsSync(LOG_FILE)) {
-      const stats = fs.statSync(LOG_FILE);
-      if (stats.size > MAX_LOG_SIZE) {
-        // Renommer l'ancien fichier avec timestamp
-        const oldLogFile = path.join(LOG_DIR, `coap.${Date.now()}.log`);
-        fs.renameSync(LOG_FILE, oldLogFile);
-      }
-    }
-    
-    // Écrire dans le fichier (append)
-    fs.appendFileSync(LOG_FILE, logEntry, 'utf8');
+    // Écrire dans la table EventLog
+    await prisma.eventLog.create({
+      data: {
+        type: `COAP_${level}`,
+        message: message,
+        data: dataStr,
+      },
+    });
   } catch (error) {
-    // Si on ne peut pas écrire dans le fichier, on log juste dans la console
-    console.error('Failed to write to log file:', error);
+    // Si on ne peut pas écrire dans la DB, on log juste dans la console
+    console.error('Failed to write to database log:', error);
   }
 }
 
-// Helper pour logger avec timestamp - écrit dans la console ET dans le fichier
+// Helper pour logger avec timestamp - écrit dans la console ET dans la base de données
 function logCoAP(message: string, data?: any) {
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] [COAP] ${message}`;
@@ -76,8 +57,10 @@ function logCoAP(message: string, data?: any) {
     console.log(logLine);
   }
   
-  // Écrire dans le fichier de log
-  writeToLogFile('INFO', message, data);
+  // Écrire dans la base de données (asynchrone, ne bloque pas)
+  writeToDatabaseLog('INFO', message, data).catch(err => {
+    console.error('Failed to write CoAP log to database:', err);
+  });
 }
 
 function errorCoAP(message: string, error?: any) {
@@ -103,8 +86,10 @@ function errorCoAP(message: string, error?: any) {
     console.error(errorLine);
   }
   
-  // Écrire dans le fichier de log
-  writeToLogFile('ERROR', message, error);
+  // Écrire dans la base de données (asynchrone, ne bloque pas)
+  writeToDatabaseLog('ERROR', message, error).catch(err => {
+    console.error('Failed to write CoAP error to database:', err);
+  });
 }
 
 // Types pour les requêtes/réponses CoAP
@@ -333,8 +318,8 @@ export function createCoAPServer() {
     console.log(`   Auth: API key via ?apiKey=... or in payload`);
     console.log(`   ✅ CoAP server is ready to receive requests`);
     console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
-    console.log(`   📝 Logs are written to: ${LOG_FILE}`);
-    logCoAP('CoAP server started', { port: COAP_PORT, logFile: LOG_FILE });
+    console.log(`   📝 Logs are written to database (event_logs table)`);
+    logCoAP('CoAP server started', { port: COAP_PORT });
   });
 
   server.on('error', (err: any) => {

@@ -80,4 +80,38 @@ router.get('/history', async (req, res) => {
   }
 });
 
+// GET /api/stats/coap-logs - Logs CoAP spécifiques
+router.get('/coap-logs', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 200;
+    const level = req.query.level as string | undefined; // 'INFO' ou 'ERROR'
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const where: any = {
+      createdAt: { gte: startDate },
+      type: {
+        startsWith: 'COAP_',
+      },
+    };
+
+    if (level) {
+      where.type = `COAP_${level.toUpperCase()}`;
+    }
+
+    const logs = await prisma.eventLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    res.json(logs);
+  } catch (error) {
+    console.error('Error fetching CoAP logs:', error);
+    res.status(500).json({ error: 'Erreur lors de la récupération des logs CoAP' });
+  }
+});
+
 export default router;
