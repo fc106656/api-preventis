@@ -4,6 +4,9 @@ node_modules
 
 /generated/prisma
 
+# Build output (should be compiled on deployment)
+dist/
+
 # Log files
 logs/
 *.log
