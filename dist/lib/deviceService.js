@@ -46,6 +46,15 @@ async function updateDeviceValue(params) {
                 ...(batteryLevel !== undefined && { batteryLevel: parseInt(String(batteryLevel)) }),
             },
         });
+        // Enregistrer dans l'historique
+        await prisma_1.default.deviceValueHistory.create({
+            data: {
+                deviceId: deviceId,
+                value: numValue,
+                status: newStatus,
+                ...(batteryLevel !== undefined && { batteryLevel: parseInt(String(batteryLevel)) }),
+            },
+        });
         // Créer une alerte si seuil dépassé
         if (newStatus === client_1.DeviceStatus.ALERT && existingDevice.status !== client_1.DeviceStatus.ALERT) {
             let alertType = client_1.AlertType.SYSTEM;
