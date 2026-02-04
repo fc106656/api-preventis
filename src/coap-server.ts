@@ -1,45 +1,90 @@
 // Serveur CoAP pour Preventis
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
 import * as coap from 'coap';
+import * as fs from 'fs';
+import * as path from 'path';
 import { verifyApiKey } from './lib/auth';
 import { updateDeviceValue } from './lib/deviceService';
 
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
 
-// Helper pour logger avec timestamp - écrit directement vers stdout/stderr
+// Configuration du fichier de log
+const LOG_DIR = path.join(process.cwd(), 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'coap.log');
+const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB max par fichier
+
+// Créer le dossier logs s'il n'existe pas
+if (!fs.existsSync(LOG_DIR)) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+// Fonction pour écrire dans le fichier de log
+function writeToLogFile(level: 'INFO' | 'ERROR', message: string, data?: any) {
+  try {
+    const timestamp = new Date().toISOString();
+    let logEntry = `[${timestamp}] [${level}] ${message}\n`;
+    
+    if (data !== undefined) {
+      try {
+        const dataStr = typeof data === 'string' 
+          ? data 
+          : JSON.stringify(data, null, 2);
+        logEntry += `${dataStr}\n`;
+      } catch (e) {
+        logEntry += `[Data serialization error: ${e}]\n`;
+      }
+    }
+    
+    logEntry += '---\n';
+    
+    // Vérifier la taille du fichier et le roter si nécessaire
+    if (fs.existsSync(LOG_FILE)) {
+      const stats = fs.statSync(LOG_FILE);
+      if (stats.size > MAX_LOG_SIZE) {
+        // Renommer l'ancien fichier avec timestamp
+        const oldLogFile = path.join(LOG_DIR, `coap.${Date.now()}.log`);
+        fs.renameSync(LOG_FILE, oldLogFile);
+      }
+    }
+    
+    // Écrire dans le fichier (append)
+    fs.appendFileSync(LOG_FILE, logEntry, 'utf8');
+  } catch (error) {
+    // Si on ne peut pas écrire dans le fichier, on log juste dans la console
+    console.error('Failed to write to log file:', error);
+  }
+}
+
+// Helper pour logger avec timestamp - écrit dans la console ET dans le fichier
 function logCoAP(message: string, data?: any) {
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] [COAP] ${message}`;
   
+  // Écrire dans la console (pour Coolify)
   if (data !== undefined) {
     try {
-      // Formater les données de manière sécurisée
       const dataStr = typeof data === 'string' 
         ? data 
         : JSON.stringify(data, null, 2);
-      // Utiliser console.log qui écrit vers stdout (capturé par Docker/Coolify)
       console.log(logLine);
       console.log(dataStr);
-      // Forcer le flush pour s'assurer que les logs sont écrits immédiatement
-      if (process.stdout.isTTY === false) {
-        process.stdout.write('');
-      }
     } catch (e) {
       console.log(logLine);
       console.log(`[Data serialization error: ${e}]`);
     }
   } else {
     console.log(logLine);
-    if (process.stdout.isTTY === false) {
-      process.stdout.write('');
-    }
   }
+  
+  // Écrire dans le fichier de log
+  writeToLogFile('INFO', message, data);
 }
 
 function errorCoAP(message: string, error?: any) {
   const timestamp = new Date().toISOString();
   const errorLine = `[${timestamp}] [COAP ERROR] ${message}`;
   
+  // Écrire dans la console (pour Coolify)
   if (error) {
     try {
       const errorData = {
@@ -49,10 +94,6 @@ function errorCoAP(message: string, error?: any) {
       };
       console.error(errorLine);
       console.error(JSON.stringify(errorData, null, 2));
-      // Forcer le flush pour stderr aussi
-      if (process.stderr.isTTY === false) {
-        process.stderr.write('');
-      }
     } catch (e) {
       console.error(errorLine);
       console.error(`[Error serialization error: ${e}]`);
@@ -60,10 +101,10 @@ function errorCoAP(message: string, error?: any) {
     }
   } else {
     console.error(errorLine);
-    if (process.stderr.isTTY === false) {
-      process.stderr.write('');
-    }
   }
+  
+  // Écrire dans le fichier de log
+  writeToLogFile('ERROR', message, error);
 }
 
 // Types pour les requêtes/réponses CoAP
@@ -292,6 +333,8 @@ export function createCoAPServer() {
     console.log(`   Auth: API key via ?apiKey=... or in payload`);
     console.log(`   ✅ CoAP server is ready to receive requests`);
     console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
+    console.log(`   📝 Logs are written to: ${LOG_FILE}`);
+    logCoAP('CoAP server started', { port: COAP_PORT, logFile: LOG_FILE });
   });
 
   server.on('error', (err: any) => {
