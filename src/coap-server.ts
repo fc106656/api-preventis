@@ -112,9 +112,20 @@ function extractApiKey(req: CoAPRequest): string | null {
   // Méthode 1: Query string dans l'URL
   try {
     const url = new URL(req.url, 'coap://localhost');
-    const apiKey = url.searchParams.get('apiKey');
+    let apiKey = url.searchParams.get('apiKey');
     if (apiKey) {
-      logCoAP(`API key found in query string`, { length: apiKey.length });
+      // Si l'API key contient un '/', prendre seulement la partie avant (format: apiKey/deviceId)
+      // Certains clients peuvent envoyer apiKey/deviceId dans le query string
+      if (apiKey.includes('/')) {
+        const parts = apiKey.split('/');
+        apiKey = parts[0]; // Prendre seulement la partie API key
+        logCoAP(`API key extracted from query string (removed deviceId suffix)`, { 
+          originalLength: url.searchParams.get('apiKey')?.length,
+          extractedLength: apiKey.length 
+        });
+      } else {
+        logCoAP(`API key found in query string`, { length: apiKey.length });
+      }
       return apiKey;
     }
   } catch (e: any) {
