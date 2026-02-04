@@ -6,26 +6,63 @@ import { updateDeviceValue } from './lib/deviceService';
 
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
 
-// Helper pour logger avec timestamp
+// Helper pour logger avec timestamp - écrit directement vers stdout/stderr
 function logCoAP(message: string, data?: any) {
   const timestamp = new Date().toISOString();
+  const logLine = `[${timestamp}] [COAP] ${message}`;
+  
   if (data !== undefined) {
-    console.log(`[${timestamp}] [COAP] ${message}`, JSON.stringify(data, null, 2));
+    try {
+      // Formater les données de manière sécurisée
+      const dataStr = typeof data === 'string' 
+        ? data 
+        : JSON.stringify(data, null, 2);
+      // Utiliser console.log qui écrit vers stdout (capturé par Docker/Coolify)
+      console.log(logLine);
+      console.log(dataStr);
+      // Forcer le flush pour s'assurer que les logs sont écrits immédiatement
+      if (process.stdout.isTTY === false) {
+        process.stdout.write('');
+      }
+    } catch (e) {
+      console.log(logLine);
+      console.log(`[Data serialization error: ${e}]`);
+    }
   } else {
-    console.log(`[${timestamp}] [COAP] ${message}`);
+    console.log(logLine);
+    if (process.stdout.isTTY === false) {
+      process.stdout.write('');
+    }
   }
 }
 
 function errorCoAP(message: string, error?: any) {
   const timestamp = new Date().toISOString();
+  const errorLine = `[${timestamp}] [COAP ERROR] ${message}`;
+  
   if (error) {
-    console.error(`[${timestamp}] [COAP ERROR] ${message}`, {
-      message: error?.message,
-      stack: error?.stack,
-      ...error,
-    });
+    try {
+      const errorData = {
+        message: error?.message,
+        stack: error?.stack,
+        ...(typeof error === 'object' && error !== null ? error : { raw: String(error) }),
+      };
+      console.error(errorLine);
+      console.error(JSON.stringify(errorData, null, 2));
+      // Forcer le flush pour stderr aussi
+      if (process.stderr.isTTY === false) {
+        process.stderr.write('');
+      }
+    } catch (e) {
+      console.error(errorLine);
+      console.error(`[Error serialization error: ${e}]`);
+      console.error(String(error));
+    }
   } else {
-    console.error(`[${timestamp}] [COAP ERROR] ${message}`);
+    console.error(errorLine);
+    if (process.stderr.isTTY === false) {
+      process.stderr.write('');
+    }
   }
 }
 
