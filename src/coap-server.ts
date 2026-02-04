@@ -212,26 +212,16 @@ export function createCoAPServer() {
       return;
     }
 
-    // Route: POST /devices/:id/value
-    const deviceId = parseDeviceIdFromUrl(req.url);
-    logCoAP(`Parsed deviceId from URL: ${deviceId || 'NOT FOUND'}`);
-    if (!deviceId) {
-      errorCoAP(`Invalid route: ${req.url}`);
-      res.code = '4.04'; // Not Found
-      res.end(JSON.stringify({ error: 'Invalid route. Use POST /devices/{id}/value' }));
-      return;
-    }
-
-    // Authentification
+    // Authentification d'abord (nécessaire pour vérifier le deviceId)
     authenticateCoAPRequest(req)
       .then((auth) => {
         if (!auth) {
-          errorCoAP(`Authentication failed for device ${deviceId}`);
+          errorCoAP(`Authentication failed`);
           res.code = '4.01'; // Unauthorized
           res.end(JSON.stringify({ error: 'API key missing or invalid. Provide ?apiKey=... in URL or in payload.' }));
           return;
         }
-        logCoAP(`Authentication successful`, { userId: auth.userId, deviceId });
+        logCoAP(`Authentication successful`, { userId: auth.userId });
 
         // Parser le payload
         let payloadData: any;
@@ -251,6 +241,31 @@ export function createCoAPServer() {
           res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
           return;
         }
+
+        // Extraire le deviceId : soit depuis l'URL, soit depuis le payload
+        let deviceId: string | null = null;
+        
+        // Méthode 1: Depuis l'URL /devices/{id}/value
+        deviceId = parseDeviceIdFromUrl(req.url);
+        
+        // Méthode 2: Depuis le payload (format /value)
+        if (!deviceId && payloadData.deviceId) {
+          deviceId = payloadData.deviceId;
+          logCoAP(`DeviceId found in payload: ${deviceId}`);
+        }
+        
+        if (!deviceId) {
+          errorCoAP(`DeviceId not found`, { 
+            url: req.url, 
+            payloadKeys: Object.keys(payloadData),
+            message: 'DeviceId must be in URL (/devices/{id}/value) or in payload (deviceId field)'
+          });
+          res.code = '4.00'; // Bad Request
+          res.end(JSON.stringify({ error: 'DeviceId missing. Provide it in URL (/devices/{id}/value) or in payload (deviceId field)' }));
+          return;
+        }
+        
+        logCoAP(`DeviceId resolved: ${deviceId}`);
 
         // Extraire value et batteryLevel, en excluant apiKey du payload si présent
         const { value, batteryLevel, apiKey: _apiKey, ...rest } = payloadData;
@@ -313,7 +328,9 @@ export function createCoAPServer() {
 
   server.listen(COAP_PORT, () => {
     console.log(`📡 CoAP server listening on port ${COAP_PORT} (UDP)`);
-    console.log(`   Endpoint: coap://0.0.0.0:${COAP_PORT}/devices/{deviceId}/value`);
+    console.log(`   Endpoints:`);
+    console.log(`     - coap://0.0.0.0:${COAP_PORT}/devices/{deviceId}/value`);
+    console.log(`     - coap://0.0.0.0:${COAP_PORT}/value (with deviceId in payload)`);
     console.log(`   Method: POST`);
     console.log(`   Auth: API key via ?apiKey=... or in payload`);
     console.log(`   ✅ CoAP server is ready to receive requests`);
