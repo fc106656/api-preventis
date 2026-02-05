@@ -262,46 +262,51 @@ export function createCoAPServer() {
           return;
         }
 
-        // Extraire le deviceId : soit depuis l'URL, soit depuis le payload
+        // Extraire le deviceId : PRIORITÉ au payload, puis fallback sur l'URL
         let deviceId: string | null = null;
         
-        // Méthode 1: Depuis l'URL /devices/{id}/value
-        deviceId = parseDeviceIdFromUrl(req.url);
-        
-        // Méthode 2: URL directe avec deviceId (format: /{deviceId}?apiKey=...)
-        if (!deviceId) {
-          try {
-            const urlPath = req.url.split('?')[0]; // Enlever le query string
-            const pathParts = urlPath.split('/').filter((p) => p);
-            // Si l'URL est juste un UUID (format deviceId), l'utiliser
-            if (pathParts.length === 1) {
-              const potentialDeviceId = pathParts[0];
-              // Vérifier si ça ressemble à un UUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
-              const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-              if (uuidRegex.test(potentialDeviceId)) {
-                deviceId = potentialDeviceId;
-                logCoAP(`DeviceId extracted from direct URL path: ${deviceId}`);
-              }
-            }
-          } catch (e: any) {
-            logCoAP(`Could not parse deviceId from direct URL`, { error: e.message });
-          }
-        }
-        
-        // Méthode 3: Depuis le payload (format /value)
-        if (!deviceId && payloadData.deviceId) {
+        // PRIORITÉ 1: Depuis le payload (méthode principale)
+        if (payloadData.deviceId) {
           deviceId = payloadData.deviceId;
           logCoAP(`DeviceId found in payload: ${deviceId}`);
+        }
+        
+        // FALLBACK: Depuis l'URL seulement si pas trouvé dans le payload
+        if (!deviceId) {
+          // Méthode 1: Depuis l'URL /devices/{id}/value
+          deviceId = parseDeviceIdFromUrl(req.url);
+          
+          // Méthode 2: URL directe avec deviceId (format: /{deviceId}?apiKey=...)
+          if (!deviceId) {
+            try {
+              const urlPath = req.url.split('?')[0]; // Enlever le query string
+              const pathParts = urlPath.split('/').filter((p) => p);
+              // Si l'URL est juste un UUID (format deviceId), l'utiliser
+              if (pathParts.length === 1) {
+                const potentialDeviceId = pathParts[0];
+                // Vérifier si ça ressemble à un UUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                if (uuidRegex.test(potentialDeviceId)) {
+                  deviceId = potentialDeviceId;
+                  logCoAP(`DeviceId extracted from direct URL path (fallback): ${deviceId}`);
+                }
+              }
+            } catch (e: any) {
+              logCoAP(`Could not parse deviceId from direct URL`, { error: e.message });
+            }
+          } else {
+            logCoAP(`DeviceId extracted from URL path (fallback): ${deviceId}`);
+          }
         }
         
         if (!deviceId) {
           errorCoAP(`DeviceId not found`, { 
             url: req.url, 
             payloadKeys: Object.keys(payloadData),
-            message: 'DeviceId must be in URL (/devices/{id}/value, /{id}, or /value with deviceId in payload)'
+            message: 'DeviceId must be in payload (deviceId field) or in URL as fallback'
           });
           res.code = '4.00'; // Bad Request
-          res.end(JSON.stringify({ error: 'DeviceId missing. Provide it in URL or in payload (deviceId field)' }));
+          res.end(JSON.stringify({ error: 'DeviceId missing. Provide it in payload (deviceId field) or in URL as fallback.' }));
           return;
         }
         
@@ -369,11 +374,12 @@ export function createCoAPServer() {
   server.listen(COAP_PORT, () => {
     console.log(`📡 CoAP server listening on port ${COAP_PORT} (UDP)`);
     console.log(`   Endpoints:`);
-    console.log(`     - coap://0.0.0.0:${COAP_PORT}/devices/{deviceId}/value`);
-    console.log(`     - coap://0.0.0.0:${COAP_PORT}/{deviceId} (direct deviceId in URL)`);
-    console.log(`     - coap://0.0.0.0:${COAP_PORT}/value (with deviceId in payload)`);
+    console.log(`     - coap://0.0.0.0:${COAP_PORT}/value (RECOMMANDÉ: deviceId in payload)`);
+    console.log(`     - coap://0.0.0.0:${COAP_PORT}/devices/{deviceId}/value (fallback)`);
+    console.log(`     - coap://0.0.0.0:${COAP_PORT}/{deviceId} (fallback)`);
     console.log(`   Method: POST`);
     console.log(`   Auth: API key via ?apiKey=... or in payload`);
+    console.log(`   ⚠️  DeviceId: PRIORITÉ au payload, URL en fallback uniquement`);
     console.log(`   ✅ CoAP server is ready to receive requests`);
     console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
     console.log(`   📝 Logs are written to database (event_logs table)`);
