@@ -46,11 +46,13 @@ const deviceService_1 = require("./lib/deviceService");
 const prisma_1 = __importDefault(require("./lib/prisma"));
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
 // Clé AES dérivée d'un secret (compatible avec MicroPython's hashlib.sha256)
-const AES_SECRET = process.env.COAP_AES_SECRET || 'your-very-secure-password';
+const AES_SECRET = process.env.COAP_AES_SECRET || 'Password';
 const ENCRYPTION_KEY = crypto.createHash('sha256').update(AES_SECRET).digest();
 console.log('🔑 AES-256-CBC encryption configured');
-if (AES_SECRET === 'your-very-secure-password') {
+console.log(`   Secret: ${AES_SECRET.substring(0, Math.min(8, AES_SECRET.length))}... (${AES_SECRET.length} chars)`);
+if (AES_SECRET === 'Password' || AES_SECRET === 'your-very-secure-password') {
     console.log('⚠️  WARNING: Using default AES secret! Set COAP_AES_SECRET env var in production!');
+    console.log(`   ⚠️  Make sure the client uses the same secret: "${AES_SECRET}"`);
 }
 // Fonction pour écrire dans la table EventLog (base de données)
 async function writeToDatabaseLog(level, message, data) {
@@ -145,41 +147,79 @@ function decryptPayload(encryptedBuffer) {
             errorCoAP(`Empty payload received`);
             return null;
         }
-        // 1. Convert buffer to string (since MicroPython sends Base64 string)
-        const base64String = encryptedBuffer.toString('utf8');
-        const combinedData = Buffer.from(base64String, 'base64');
-        // 2. Extract IV (first 16 bytes) and Ciphertext (the rest)
+        // 1. Convert buffer to string and clean it (remove whitespace, newlines)
+        // MicroPython's b2a_base64 adds a newline that is stripped, but we should handle it
+        let base64String = encryptedBuffer.toString('utf8').trim();
+        // Remove any whitespace characters that might interfere
+        base64String = base64String.replace(/\s+/g, '');
+        logCoAP(`Base64 payload received`, {
+            rawLength: encryptedBuffer.length,
+            base64Length: base64String.length,
+            base64Preview: base64String.substring(0, 50) + '...',
+        });
+        // 2. Decode Base64 to get IV + ciphertext
+        let combinedData;
+        try {
+            combinedData = Buffer.from(base64String, 'base64');
+        }
+        catch (e) {
+            errorCoAP(`Invalid Base64 encoding`, { error: e.message });
+            return null;
+        }
+        // 3. Extract IV (first 16 bytes) and Ciphertext (the rest)
         if (combinedData.length < 16) {
             errorCoAP(`Payload too short for IV extraction`, {
-                combinedLength: combinedData.length
+                combinedLength: combinedData.length,
+                expectedMin: 16,
             });
             return null;
         }
         const iv = combinedData.slice(0, 16);
         const ciphertext = combinedData.slice(16);
+        // Verify ciphertext length is a multiple of 16 (required for AES block cipher)
+        if (ciphertext.length % 16 !== 0) {
+            errorCoAP(`Ciphertext length is not a multiple of 16`, {
+                cipherLength: ciphertext.length,
+                ivLength: iv.length,
+                totalLength: combinedData.length,
+            });
+            return null;
+        }
         logCoAP(`Attempting AES-256-CBC decryption`, {
             ivLength: iv.length,
             cipherLength: ciphertext.length,
             base64Length: base64String.length,
+            combinedDataLength: combinedData.length,
+            encryptionKeyLength: ENCRYPTION_KEY.length,
+            aesSecret: AES_SECRET.substring(0, 8) + '...',
         });
-        // 3. Decrypt using AES-256-CBC
+        // 4. Decrypt using AES-256-CBC
+        // Node's 'aes-256-cbc' handles PKCS7 padding automatically
+        // The client does manual padding, but Node.js will handle it correctly during decryption
         const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-        // Node's 'aes-256-cbc' handles PKCS7 padding by default, which matches our client
         let decrypted = decipher.update(ciphertext);
         decrypted = Buffer.concat([decrypted, decipher.final()]);
-        // 4. Parse the resulting JSON
-        const payloadData = JSON.parse(decrypted.toString('utf8'));
+        // 5. Parse the resulting JSON
+        const jsonString = decrypted.toString('utf8');
+        logCoAP(`Decrypted JSON string`, {
+            jsonLength: jsonString.length,
+            jsonPreview: jsonString.substring(0, 100) + '...',
+        });
+        const payloadData = JSON.parse(jsonString);
         logCoAP(`Payload decrypted successfully via AES-256-CBC`, {
             keys: Object.keys(payloadData),
             hasDeviceId: !!payloadData.deviceId,
             hasApiKey: !!payloadData.apiKey,
+            hasValue: payloadData.value !== undefined,
         });
         return payloadData;
     }
     catch (error) {
         errorCoAP(`AES decryption failed. Check if secret keys match.`, {
             error: error.message,
+            errorStack: error.stack?.substring(0, 200),
             payloadLength: encryptedBuffer?.length || 0,
+            aesSecret: AES_SECRET.substring(0, 8) + '...',
         });
         return null;
     }
