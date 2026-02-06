@@ -41,35 +41,16 @@ exports.createCoAPServer = createCoAPServer;
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
 const coap = __importStar(require("coap"));
 const crypto = __importStar(require("crypto"));
-const fs = __importStar(require("fs"));
-const path = __importStar(require("path"));
 const auth_1 = require("./lib/auth");
 const deviceService_1 = require("./lib/deviceService");
 const prisma_1 = __importDefault(require("./lib/prisma"));
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
-// Charger la clé privée RSA pour le déchiffrement
-// Supporte: fichier via COAP_PRIVATE_KEY_PATH ou clé directe via COAP_PRIVATE_KEY
-let PRIVATE_KEY;
-try {
-    const keyPath = process.env.COAP_PRIVATE_KEY_PATH || path.join(__dirname, '../private_key.pem');
-    if (process.env.COAP_PRIVATE_KEY) {
-        // Clé fournie directement via variable d'environnement
-        PRIVATE_KEY = process.env.COAP_PRIVATE_KEY;
-        console.log('🔑 Using RSA private key from COAP_PRIVATE_KEY environment variable');
-    }
-    else if (fs.existsSync(keyPath)) {
-        // Clé depuis un fichier
-        PRIVATE_KEY = fs.readFileSync(keyPath, 'utf8');
-        console.log(`🔑 Loaded RSA private key from: ${keyPath}`);
-    }
-    else {
-        throw new Error(`Private key not found at ${keyPath} and COAP_PRIVATE_KEY not set`);
-    }
-}
-catch (error) {
-    console.error('❌ Failed to load RSA private key:', error.message);
-    console.error('   Set COAP_PRIVATE_KEY_PATH or COAP_PRIVATE_KEY environment variable');
-    throw error;
+// Clé AES dérivée d'un secret (compatible avec MicroPython's hashlib.sha256)
+const AES_SECRET = process.env.COAP_AES_SECRET || 'your-very-secure-password';
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(AES_SECRET).digest();
+console.log('🔑 AES-256-CBC encryption configured');
+if (AES_SECRET === 'your-very-secure-password') {
+    console.log('⚠️  WARNING: Using default AES secret! Set COAP_AES_SECRET env var in production!');
 }
 // Fonction pour écrire dans la table EventLog (base de données)
 async function writeToDatabaseLog(level, message, data) {
@@ -154,8 +135,9 @@ function errorCoAP(message, error) {
     });
 }
 /**
- * Déchiffre un payload encrypté avec RSA
- * Utilise la clé privée RSA pour déchiffrer le payload
+ * Déchiffre un payload encrypté avec AES-256-CBC (Base64)
+ * Matches the MicroPython AESCipher/CoAPClient implementation
+ * Format: Base64 string containing IV (16 bytes) + ciphertext
  */
 function decryptPayload(encryptedBuffer) {
     try {
@@ -163,15 +145,31 @@ function decryptPayload(encryptedBuffer) {
             errorCoAP(`Empty payload received`);
             return null;
         }
-        logCoAP(`Attempting RSA decryption`, { payloadLength: encryptedBuffer.length });
-        // Déchiffrer avec la clé privée RSA
-        const decrypted = crypto.privateDecrypt({
-            key: PRIVATE_KEY,
-            padding: crypto.constants.RSA_PKCS1_PADDING,
-        }, encryptedBuffer);
-        // Parser le JSON déchiffré
+        // 1. Convert buffer to string (since MicroPython sends Base64 string)
+        const base64String = encryptedBuffer.toString('utf8');
+        const combinedData = Buffer.from(base64String, 'base64');
+        // 2. Extract IV (first 16 bytes) and Ciphertext (the rest)
+        if (combinedData.length < 16) {
+            errorCoAP(`Payload too short for IV extraction`, {
+                combinedLength: combinedData.length
+            });
+            return null;
+        }
+        const iv = combinedData.slice(0, 16);
+        const ciphertext = combinedData.slice(16);
+        logCoAP(`Attempting AES-256-CBC decryption`, {
+            ivLength: iv.length,
+            cipherLength: ciphertext.length,
+            base64Length: base64String.length,
+        });
+        // 3. Decrypt using AES-256-CBC
+        const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+        // Node's 'aes-256-cbc' handles PKCS7 padding by default, which matches our client
+        let decrypted = decipher.update(ciphertext);
+        decrypted = Buffer.concat([decrypted, decipher.final()]);
+        // 4. Parse the resulting JSON
         const payloadData = JSON.parse(decrypted.toString('utf8'));
-        logCoAP(`Payload decrypted and parsed successfully`, {
+        logCoAP(`Payload decrypted successfully via AES-256-CBC`, {
             keys: Object.keys(payloadData),
             hasDeviceId: !!payloadData.deviceId,
             hasApiKey: !!payloadData.apiKey,
@@ -179,7 +177,7 @@ function decryptPayload(encryptedBuffer) {
         return payloadData;
     }
     catch (error) {
-        errorCoAP(`RSA decryption failed`, {
+        errorCoAP(`AES decryption failed. Check if secret keys match.`, {
             error: error.message,
             payloadLength: encryptedBuffer?.length || 0,
         });
@@ -306,13 +304,14 @@ function createCoAPServer() {
     server.listen(COAP_PORT, () => {
         console.log(`📡 Secure CoAP server listening on port ${COAP_PORT} (UDP)`);
         console.log(`   Method: POST`);
-        console.log(`   🔐 Encryption: RSA (PKCS1 padding)`);
-        console.log(`   🔑 Private key: Loaded successfully`);
-        console.log(`   📋 Payload format: Encrypted JSON with deviceId, apiKey, value, batteryLevel`);
+        console.log(`   🔐 Encryption: AES-256-CBC (Base64)`);
+        console.log(`   🔑 AES Secret: ${AES_SECRET.substring(0, 8)}... (${AES_SECRET.length} chars)`);
+        console.log(`   📋 Payload format: Base64-encoded encrypted JSON (IV + ciphertext)`);
+        console.log(`   📋 JSON fields: deviceId, apiKey, value, batteryLevel`);
         console.log(`   ✅ CoAP server is ready to receive encrypted requests`);
         console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
         console.log(`   📝 Logs are written to database (event_logs table)`);
-        logCoAP('CoAP server started', { port: COAP_PORT, encryption: 'RSA' });
+        logCoAP('CoAP server started', { port: COAP_PORT, encryption: 'AES-256-CBC' });
     });
     server.on('error', (err) => {
         console.error('❌ CoAP server error:', err);

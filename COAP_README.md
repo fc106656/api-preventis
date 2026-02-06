@@ -1,52 +1,52 @@
-﻿# Serveur CoAP - Preventis API
+# Serveur CoAP - Preventis API
 
-Le serveur CoAP permet aux capteurs IoT (ESP32, etc.) d'envoyer des donnÃ©es via le protocole CoAP (UDP) au lieu de HTTP.
+Le serveur CoAP permet aux capteurs IoT (ESP32, etc.) d'envoyer des données via le protocole CoAP (UDP) au lieu de HTTP.
 
 ## Configuration
 
-- **Port par dÃ©faut**: 5683 (UDP)
-- **Port configurable**: Variable d'environnement COAP_PORT
-- **ClÃ© privÃ©e RSA**: Fichier private_key.pem ou variable d'environnement COAP_PRIVATE_KEY
+- **Port par défaut**: 5683 (UDP)
+- **Port configurable**: Variable d'environnement `COAP_PORT`
+- **Secret AES**: Variable d'environnement `COAP_AES_SECRET` (par défaut: 'your-very-secure-password')
 
 ## Endpoint
 
-### Mettre Ã  jour la valeur d'un device
+### Mettre à jour la valeur d'un device
 
-**MÃ©thode**: POST  
-**URL**: /value (ou n'importe quelle route)  
-**Authentification**: API Key (dans le payload encryptÃ©)
+**Méthode**: `POST`  
+**URL**: `/value` (ou n'importe quelle route)  
+**Authentification**: API Key (dans le payload encrypté)
 
 #### Payload
 
-Le payload **doit Ãªtre encryptÃ© avec RSA** (clÃ© publique du serveur). Le JSON dÃ©chiffrÃ© doit contenir :
+Le payload **doit être encrypté avec AES-256-CBC** et encodé en Base64. Le JSON déchiffré doit contenir :
 
-`json
+```json
 {
   "deviceId": "device-uuid",
   "apiKey": "YOUR_API_KEY",
   "value": 23.5,
   "batteryLevel": 80
 }
-`
+```
 
-**Champs du payload (aprÃ¨s dÃ©chiffrement)** :
-- deviceId (requis): ID du device (UUID)
-- piKey (requis): API key pour l'authentification
-- alue (requis): La valeur du capteur (nombre)
-- atteryLevel (optionnel): Niveau de batterie en pourcentage (0-100)
+**Champs du payload (après déchiffrement)** :
+- `deviceId` (requis): ID du device (UUID)
+- `apiKey` (requis): API key pour l'authentification
+- `value` (requis): La valeur du capteur (nombre)
+- `batteryLevel` (optionnel): Niveau de batterie en pourcentage (0-100)
 
-#### Codes de rÃ©ponse CoAP
+#### Codes de réponse CoAP
 
-- 2.04 Changed: SuccÃ¨s, device mis Ã  jour
-- 4.00 Bad Request: DonnÃ©es invalides (dÃ©chiffrement Ã©chouÃ©, JSON invalide, champ manquant)
-- 4.01 Unauthorized: API key manquante ou invalide
-- 4.04 Not Found: Device non trouvÃ©
-- 4.05 Method Not Allowed: MÃ©thode HTTP non supportÃ©e (seul POST est supportÃ©)
-- 5.00 Internal Server Error: Erreur serveur
+- `2.04 Changed`: Succès, device mis à jour
+- `4.00 Bad Request`: Données invalides (déchiffrement échoué, JSON invalide, champ manquant)
+- `4.01 Unauthorized`: API key manquante ou invalide
+- `4.04 Not Found`: Device non trouvé
+- `4.05 Method Not Allowed`: Méthode HTTP non supportée (seul POST est supporté)
+- `5.00 Internal Server Error`: Erreur serveur
 
-#### Exemple de rÃ©ponse (succÃ¨s)
+#### Exemple de réponse (succès)
 
-`json
+```json
 {
   "success": true,
   "device": {
@@ -55,49 +55,55 @@ Le payload **doit Ãªtre encryptÃ© avec RSA** (clÃ© publique du serveur). L
     "status": "ONLINE"
   }
 }
-`
+```
 
 ## Test
 
-âš ï¸ **Note** : Les tests nÃ©cessitent de chiffrer le payload avec la clÃ© publique RSA du serveur. Utilisez les clients Python fournis (emeteur.py ou emeteur_standard.py) qui gÃ¨rent automatiquement le chiffrement RSA.
+⚠️ **Note** : Les tests nécessitent de chiffrer le payload avec AES-256-CBC. Utilisez les clients Python fournis (`emeteur.py` ou `emeteur_standard.py`) qui gèrent automatiquement le chiffrement AES.
 
-## Chiffrement RSA
+## Chiffrement AES-256-CBC
 
-Le serveur utilise **RSA** pour dÃ©chiffrer les payloads. Tous les payloads doivent Ãªtre encryptÃ©s avec la clÃ© publique RSA du serveur.
+Le serveur utilise **AES-256-CBC** pour déchiffrer les payloads. Tous les payloads doivent être encryptés avec la même clé secrète.
 
-### Configuration de la clÃ© privÃ©e
+### Configuration du secret AES
 
-Le serveur charge la clÃ© privÃ©e RSA de l'une des maniÃ¨res suivantes (par ordre de prioritÃ©) :
+Le serveur dérive une clé AES-256 (32 bytes) depuis un secret via SHA-256 :
 
-1. **Variable d'environnement COAP_PRIVATE_KEY** (recommandÃ© pour la production) :
-   `env
-   COAP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-   `
+```env
+COAP_AES_SECRET=your-very-secure-password
+```
 
-2. **Fichier via variable d'environnement COAP_PRIVATE_KEY_PATH** :
-   `env
-   COAP_PRIVATE_KEY_PATH=/path/to/private_key.pem
-   `
-
-3. **Fichier par dÃ©faut** : private_key.pem dans le rÃ©pertoire pi/
+⚠️ **Important** : 
+- Utilisez le **même secret** que celui configuré dans vos clients IoT (ESP32, etc.)
+- En production, définissez `COAP_AES_SECRET` comme variable d'environnement dans Coolify
+- Le secret est hashé avec SHA-256 pour obtenir une clé de 32 bytes (compatible avec MicroPython's hashlib.sha256)
 
 ### Format de chiffrement
 
-- **Algorithme**: RSA
-- **Padding**: PKCS1 (RSA_PKCS1_PADDING)
-- **Format**: Payload binaire encryptÃ© avec la clÃ© publique RSA
+- **Algorithme**: AES-256-CBC
+- **Padding**: PKCS7 (géré automatiquement)
+- **Format**: Base64 string contenant `IV (16 bytes) + données encryptées`
+- **Encodage**: Le payload complet (IV + ciphertext) est encodé en Base64 avant envoi
 
-âš ï¸ **Important** : 
-- La clÃ© privÃ©e ne doit **jamais** Ãªtre commitÃ©e dans Git (dÃ©jÃ  dans .gitignore)
-- En production, utilisez COAP_PRIVATE_KEY comme variable d'environnement dans Coolify
-- Les clients doivent utiliser la **clÃ© publique** correspondante pour chiffrer leurs payloads
+**Processus de chiffrement (côté client)** :
+1. Générer un IV aléatoire de 16 bytes
+2. Chiffrer le JSON avec AES-256-CBC (IV + clé dérivée via SHA-256 du secret)
+3. Concaténer IV + ciphertext
+4. Encoder le tout en Base64
+5. Envoyer la chaîne Base64 dans le payload CoAP
+
+**Processus de déchiffrement (côté serveur)** :
+1. Décoder le payload Base64
+2. Extraire l'IV (16 premiers bytes)
+3. Déchiffrer le reste avec AES-256-CBC
+4. Parser le JSON résultant
 
 ## Notes importantes
 
-- Le serveur CoAP dÃ©marre automatiquement avec l'API HTTP
-- Les deux serveurs (HTTP et CoAP) partagent la mÃªme logique mÃ©tier
-- Les alertes sont crÃ©Ã©es automatiquement si un seuil est dÃ©passÃ©
-- Le statut du device est mis Ã  jour automatiquement selon la valeur
-- **Tous les payloads doivent Ãªtre encryptÃ©s avec RSA** (pas de JSON clair)
-- Le deviceId et l'piKey doivent Ãªtre dans le payload encryptÃ©
-- Les logs sont Ã©crits dans la base de donnÃ©es (event_logs table)
+- Le serveur CoAP démarre automatiquement avec l'API HTTP
+- Les deux serveurs (HTTP et CoAP) partagent la même logique métier
+- Les alertes sont créées automatiquement si un seuil est dépassé
+- Le statut du device est mis à jour automatiquement selon la valeur
+- **Tous les payloads doivent être encryptés avec AES-256-CBC** (pas de JSON clair)
+- Le `deviceId` et l'`apiKey` doivent être dans le payload encrypté
+- Les logs sont écrits dans la base de données (`event_logs` table)
