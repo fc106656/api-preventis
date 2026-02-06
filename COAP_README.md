@@ -6,6 +6,7 @@ Le serveur CoAP permet aux capteurs IoT (ESP32, etc.) d'envoyer des données via
 
 - **Port par défaut**: 5683 (UDP)
 - **Port configurable**: Variable d'environnement `COAP_PORT`
+- **Clé de décryptage**: Variable d'environnement `COAP_ENCRYPTION_KEY` (32 bytes, par défaut: clé de test)
 
 ## Endpoint
 
@@ -33,15 +34,29 @@ Le serveur CoAP permet aux capteurs IoT (ESP32, etc.) d'envoyer des données via
 
 #### Payload
 
+Le serveur supporte **deux formats de payload** :
+
+1. **JSON clair** (non encrypté) :
 ```json
 {
+  "deviceId": "device-uuid",
   "value": 23.5,
-  "batteryLevel": 80
+  "batteryLevel": 80,
+  "apiKey": "YOUR_API_KEY"
 }
 ```
 
+2. **Payload encrypté** (AES-256-CTR) :
+   - Format: `IV (16 bytes) + données encryptées`
+   - Le JSON est encrypté avec AES-256 en mode CTR
+   - L'IV est généré aléatoirement et préfixé au payload
+   - Le serveur détecte automatiquement si le payload est encrypté
+
+**Champs du payload** :
+- `deviceId` (requis): ID du device (UUID)
 - `value` (requis): La valeur du capteur (nombre)
 - `batteryLevel` (optionnel): Niveau de batterie en pourcentage (0-100)
+- `apiKey` (optionnel): API key (peut être dans l'URL à la place)
 
 #### Codes de réponse CoAP
 
@@ -100,9 +115,32 @@ req.write(JSON.stringify({
 req.end();
 ```
 
+## Chiffrement
+
+Le serveur supporte le **déchiffrement automatique** des payloads encryptés avec AES-256-CTR.
+
+### Configuration
+
+Définir la variable d'environnement `COAP_ENCRYPTION_KEY` avec une clé de 32 bytes :
+
+```env
+COAP_ENCRYPTION_KEY=your-32-byte-secret-key-here
+```
+
+⚠️ **Important** : Utilisez la même clé que celle configurée dans vos clients IoT (ESP32, etc.).
+
+### Format de chiffrement
+
+- **Algorithme**: AES-256-CTR
+- **IV**: 16 bytes aléatoires, préfixés au payload
+- **Format**: `IV (16 bytes) + données encryptées`
+
+Le serveur détecte automatiquement si un payload est encrypté ou en JSON clair, permettant une **rétrocompatibilité** avec les anciens clients.
+
 ## Notes importantes
 
 - Le serveur CoAP démarre automatiquement avec l'API HTTP
 - Les deux serveurs (HTTP et CoAP) partagent la même logique métier
 - Les alertes sont créées automatiquement si un seuil est dépassé
 - Le statut du device est mis à jour automatiquement selon la valeur
+- Le `deviceId` doit être dans le payload (priorité) ou dans l'URL (fallback)

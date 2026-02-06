@@ -1,1 +1,1 @@
-{"version":3,"file":"coap-server.d.ts","sourceRoot":"","sources":["../src/coap-server.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,IAAI,MAAM,MAAM,CAAC;AA8L7B;;GAEG;AACH,wBAAgB,gBAAgB,gBAwJ/B"}
+{"version":3,"file":"coap-server.d.ts","sourceRoot":"","sources":["../src/coap-server.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,IAAI,MAAM,MAAM,CAAC;AAgS7B;;GAEG;AACH,wBAAgB,gBAAgB,gBAwN/B"}

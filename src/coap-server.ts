@@ -1,11 +1,19 @@
 // Serveur CoAP pour Preventis
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
 import * as coap from 'coap';
+import * as crypto from 'crypto';
 import { verifyApiKey } from './lib/auth';
 import { updateDeviceValue } from './lib/deviceService';
 import prisma from './lib/prisma';
 
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
+
+// Clé de décryptage AES-256 (32 bytes)
+// Par défaut: la même que dans le client Python (à changer en production!)
+const ENCRYPTION_KEY = process.env.COAP_ENCRYPTION_KEY || '12345678901234567890123456789012';
+
+// S'assurer que la clé fait exactement 32 bytes
+const ENCRYPTION_KEY_BUFFER = Buffer.from(ENCRYPTION_KEY.padEnd(32, '0').substring(0, 32), 'utf8');
 
 // Fonction pour écrire dans la table EventLog (base de données)
 async function writeToDatabaseLog(level: 'INFO' | 'ERROR', message: string, data?: any) {
@@ -186,6 +194,76 @@ async function authenticateCoAPRequest(req: CoAPRequest): Promise<{ userId: stri
 }
 
 /**
+ * Déchiffre un payload encrypté avec AES-256-CTR
+ * Format: IV (16 bytes) + données encryptées
+ * Compatible avec ucryptolib.aes en mode CTR (mode 6)
+ */
+function decryptPayload(encryptedBuffer: Buffer): string | null {
+  try {
+    // L'IV fait 16 bytes et est préfixé au payload
+    if (encryptedBuffer.length < 16) {
+      errorCoAP(`Encrypted payload too short (must be at least 16 bytes for IV)`);
+      return null;
+    }
+
+    // Extraire l'IV (16 premiers bytes)
+    const iv = encryptedBuffer.subarray(0, 16);
+    // Le reste est les données encryptées
+    const encrypted = encryptedBuffer.subarray(16);
+
+    // Créer le déchiffreur AES-256-CTR
+    const decipher = crypto.createDecipheriv('aes-256-ctr', ENCRYPTION_KEY_BUFFER, iv);
+    
+    // Déchiffrer
+    let decrypted = decipher.update(encrypted);
+    const final = decipher.final();
+    decrypted = Buffer.concat([decrypted, final]);
+
+    // Retourner le JSON string
+    return decrypted.toString('utf8');
+  } catch (error: any) {
+    errorCoAP(`Decryption failed`, { error: error.message });
+    return null;
+  }
+}
+
+/**
+ * Détecte si un payload est encrypté (binaire) ou en JSON clair
+ * Retourne true si le payload semble être encrypté
+ */
+function isEncrypted(payload: Buffer): boolean {
+  if (!payload || payload.length === 0) {
+    return false;
+  }
+
+  // Si le payload est très court (< 16 bytes), ce n'est probablement pas encrypté
+  if (payload.length < 16) {
+    return false;
+  }
+
+  // Tenter de parser comme JSON
+  try {
+    const str = payload.toString('utf8');
+    JSON.parse(str);
+    // Si ça parse en JSON, ce n'est pas encrypté
+    return false;
+  } catch {
+    // Si ça ne parse pas en JSON, c'est probablement encrypté
+    // Vérifier aussi que ce n'est pas juste un JSON malformé
+    // En général, un payload encrypté commence par des bytes non-printables
+    const firstByte = payload[0];
+    // Les bytes encryptés sont souvent non-printables (< 32) ou > 126
+    // Mais un JSON peut aussi commencer par '{' (123) ou '[' (91)
+    // On considère encrypté si les premiers bytes ne sont pas des caractères JSON typiques
+    if (firstByte === 0x7B || firstByte === 0x5B || firstByte === 0x22) {
+      // '{', '[', ou '"' - probablement du JSON
+      return false;
+    }
+    return true;
+  }
+}
+
+/**
  * Parse l'URL CoAP pour extraire le device ID
  * Format attendu: /devices/{id}/value
  */
@@ -243,22 +321,54 @@ export function createCoAPServer() {
         }
         logCoAP(`Authentication successful`, { userId: auth.userId });
 
-        // Parser le payload
+        // Parser le payload (avec support du décryptage)
         let payloadData: any;
         try {
-          // Le payload peut être vide ou un Buffer
-          const payloadStr = req.payload ? req.payload.toString() : '{}';
-          if (!payloadStr || payloadStr.trim() === '') {
+          if (!req.payload || req.payload.length === 0) {
             payloadData = {};
             logCoAP(`Empty payload, using default {}`);
           } else {
-            payloadData = JSON.parse(payloadStr);
-            logCoAP(`Parsed payload`, payloadData);
+            // Détecter si le payload est encrypté
+            const isEncryptedPayload = isEncrypted(req.payload);
+            
+            let payloadStr: string;
+            if (isEncryptedPayload) {
+              logCoAP(`Payload appears to be encrypted, attempting decryption...`, {
+                payloadLength: req.payload.length,
+              });
+              
+              const decrypted = decryptPayload(req.payload);
+              if (!decrypted) {
+                errorCoAP(`Failed to decrypt payload`);
+                res.code = '4.00'; // Bad Request
+                res.end(JSON.stringify({ error: 'Failed to decrypt payload. Check encryption key.' }));
+                return;
+              }
+              
+              payloadStr = decrypted;
+              logCoAP(`Payload decrypted successfully`, { decryptedLength: payloadStr.length });
+            } else {
+              // Payload en JSON clair
+              payloadStr = req.payload.toString('utf8');
+              logCoAP(`Payload is plain JSON (not encrypted)`);
+            }
+            
+            if (!payloadStr || payloadStr.trim() === '') {
+              payloadData = {};
+              logCoAP(`Empty payload after decryption/parsing, using default {}`);
+            } else {
+              payloadData = JSON.parse(payloadStr);
+              logCoAP(`Parsed payload`, payloadData);
+            }
           }
         } catch (e: any) {
-          errorCoAP(`Error parsing payload`, { error: e.message, payloadRaw });
+          errorCoAP(`Error parsing payload`, { 
+            error: e.message, 
+            payloadRaw: payloadRaw.substring(0, 100), // Limiter la taille du log
+            payloadLength: req.payload ? req.payload.length : 0,
+          });
           res.code = '4.00'; // Bad Request
-          res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
+          res.end(JSON.stringify({ error: 'Invalid JSON payload or decryption failed' }));
           return;
         }
 
@@ -380,6 +490,11 @@ export function createCoAPServer() {
     console.log(`   Method: POST`);
     console.log(`   Auth: API key via ?apiKey=... or in payload`);
     console.log(`   ⚠️  DeviceId: PRIORITÉ au payload, URL en fallback uniquement`);
+    console.log(`   🔐 Encryption: AES-256-CTR supported (auto-detect)`);
+    console.log(`   🔑 Encryption key: ${ENCRYPTION_KEY.substring(0, 8)}... (${ENCRYPTION_KEY.length} chars)`);
+    if (ENCRYPTION_KEY === '12345678901234567890123456789012') {
+      console.log(`   ⚠️  WARNING: Using default encryption key! Set COAP_ENCRYPTION_KEY env var in production!`);
+    }
     console.log(`   ✅ CoAP server is ready to receive requests`);
     console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
     console.log(`   📝 Logs are written to database (event_logs table)`);
