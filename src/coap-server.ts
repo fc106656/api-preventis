@@ -2,18 +2,36 @@
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
 import * as coap from 'coap';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { verifyApiKey } from './lib/auth';
 import { updateDeviceValue } from './lib/deviceService';
 import prisma from './lib/prisma';
 
 const COAP_PORT = parseInt(process.env.COAP_PORT || '5683', 10);
 
-// Clé de décryptage AES-256 (32 bytes)
-// Par défaut: la même que dans le client Python (à changer en production!)
-const ENCRYPTION_KEY = process.env.COAP_ENCRYPTION_KEY || '12345678901234567890123456789012';
-
-// S'assurer que la clé fait exactement 32 bytes
-const ENCRYPTION_KEY_BUFFER = Buffer.from(ENCRYPTION_KEY.padEnd(32, '0').substring(0, 32), 'utf8');
+// Charger la clé privée RSA pour le déchiffrement
+// Supporte: fichier via COAP_PRIVATE_KEY_PATH ou clé directe via COAP_PRIVATE_KEY
+let PRIVATE_KEY: string;
+try {
+  const keyPath = process.env.COAP_PRIVATE_KEY_PATH || path.join(__dirname, '../private_key.pem');
+  
+  if (process.env.COAP_PRIVATE_KEY) {
+    // Clé fournie directement via variable d'environnement
+    PRIVATE_KEY = process.env.COAP_PRIVATE_KEY;
+    console.log('🔑 Using RSA private key from COAP_PRIVATE_KEY environment variable');
+  } else if (fs.existsSync(keyPath)) {
+    // Clé depuis un fichier
+    PRIVATE_KEY = fs.readFileSync(keyPath, 'utf8');
+    console.log(`🔑 Loaded RSA private key from: ${keyPath}`);
+  } else {
+    throw new Error(`Private key not found at ${keyPath} and COAP_PRIVATE_KEY not set`);
+  }
+} catch (error: any) {
+  console.error('❌ Failed to load RSA private key:', error.message);
+  console.error('   Set COAP_PRIVATE_KEY_PATH or COAP_PRIVATE_KEY environment variable');
+  throw error;
+}
 
 // Fonction pour écrire dans la table EventLog (base de données)
 async function writeToDatabaseLog(level: 'INFO' | 'ERROR', message: string, data?: any) {
@@ -109,184 +127,47 @@ type CoAPRequest = coap.IncomingMessage & {
 
 type CoAPResponse = coap.OutgoingMessage;
 
-/**
- * Extrait l'API key depuis les options CoAP
- * Supporte plusieurs méthodes :
- * - Option personnalisée 'X-API-Key' (si supporté)
- * - Query string dans l'URL (?apiKey=...)
- * - Payload JSON avec apiKey
- */
-function extractApiKey(req: CoAPRequest): string | null {
-  // Méthode 1: Query string dans l'URL
-  try {
-    const url = new URL(req.url, 'coap://localhost');
-    let apiKey = url.searchParams.get('apiKey');
-    if (apiKey) {
-      // Si l'API key contient un '/', prendre seulement la partie avant (format: apiKey/deviceId)
-      // Certains clients peuvent envoyer apiKey/deviceId dans le query string
-      if (apiKey.includes('/')) {
-        const parts = apiKey.split('/');
-        apiKey = parts[0]; // Prendre seulement la partie API key
-        logCoAP(`API key extracted from query string (removed deviceId suffix)`, { 
-          originalLength: url.searchParams.get('apiKey')?.length,
-          extractedLength: apiKey.length 
-        });
-      } else {
-        logCoAP(`API key found in query string`, { length: apiKey.length });
-      }
-      return apiKey;
-    }
-  } catch (e: any) {
-    // URL invalide, continuer
-    logCoAP(`Could not parse URL for API key extraction`, { error: e.message });
-  }
-
-  // Méthode 2: Dans le payload JSON
-  try {
-    const payload = req.payload ? req.payload.toString() : '';
-    if (payload) {
-      const data = JSON.parse(payload);
-      if (data.apiKey) {
-        logCoAP(`API key found in payload`, { length: data.apiKey.length });
-        return data.apiKey;
-      }
-    }
-  } catch (e: any) {
-    // Pas de JSON valide
-    logCoAP(`Could not parse payload for API key extraction`, { error: e.message });
-  }
-
-  // Méthode 3: Option CoAP personnalisée (si disponible)
-  // Note: node-coap ne supporte pas facilement les options personnalisées
-  // On utilisera plutôt la query string ou le payload
-
-  errorCoAP(`No API key found in query string or payload`);
-  return null;
-}
 
 /**
- * Authentifie la requête CoAP via API key
+ * Déchiffre un payload encrypté avec RSA
+ * Utilise la clé privée RSA pour déchiffrer le payload
  */
-async function authenticateCoAPRequest(req: CoAPRequest): Promise<{ userId: string } | null> {
-  const apiKey = extractApiKey(req);
-
-  if (!apiKey) {
-    logCoAP(`No API key extracted from request`);
-    return null;
-  }
-
-  logCoAP(`Verifying API key`, { apiKeyLength: apiKey.length, apiKeyPrefix: apiKey.substring(0, 20) + '...' });
-  
-  const verified = await verifyApiKey(apiKey);
-  if (!verified) {
-    errorCoAP(`API key verification failed`, { 
-      apiKeyLength: apiKey.length,
-      apiKeyPrefix: apiKey.substring(0, 20) + '...',
-      reason: 'Key not found, expired, or invalid'
-    });
-    return null;
-  }
-
-  logCoAP(`API key verified successfully`, { userId: verified.userId, apiKeyId: verified.apiKeyId });
-  return {
-    userId: verified.userId,
-  };
-}
-
-/**
- * Déchiffre un payload encrypté avec AES-256-CTR
- * Format: IV (16 bytes) + données encryptées
- * Compatible avec ucryptolib.aes en mode CTR (mode 6)
- */
-function decryptPayload(encryptedBuffer: Buffer): string | null {
+function decryptPayload(encryptedBuffer: Buffer): any {
   try {
-    // L'IV fait 16 bytes et est préfixé au payload
-    if (encryptedBuffer.length < 16) {
-      errorCoAP(`Encrypted payload too short (must be at least 16 bytes for IV)`);
+    if (!encryptedBuffer || encryptedBuffer.length === 0) {
+      errorCoAP(`Empty payload received`);
       return null;
     }
 
-    // Extraire l'IV (16 premiers bytes)
-    const iv = encryptedBuffer.subarray(0, 16);
-    // Le reste est les données encryptées
-    const encrypted = encryptedBuffer.subarray(16);
+    logCoAP(`Attempting RSA decryption`, { payloadLength: encryptedBuffer.length });
 
-    // Créer le déchiffreur AES-256-CTR
-    const decipher = crypto.createDecipheriv('aes-256-ctr', ENCRYPTION_KEY_BUFFER, iv);
-    
-    // Déchiffrer
-    let decrypted = decipher.update(encrypted);
-    const final = decipher.final();
-    decrypted = Buffer.concat([decrypted, final]);
+    // Déchiffrer avec la clé privée RSA
+    const decrypted = crypto.privateDecrypt(
+      {
+        key: PRIVATE_KEY,
+        padding: crypto.constants.RSA_PKCS1_PADDING,
+      },
+      encryptedBuffer
+    );
 
-    // Retourner le JSON string
-    return decrypted.toString('utf8');
+    // Parser le JSON déchiffré
+    const payloadData = JSON.parse(decrypted.toString('utf8'));
+    logCoAP(`Payload decrypted and parsed successfully`, { 
+      keys: Object.keys(payloadData),
+      hasDeviceId: !!payloadData.deviceId,
+      hasApiKey: !!payloadData.apiKey,
+    });
+
+    return payloadData;
   } catch (error: any) {
-    errorCoAP(`Decryption failed`, { error: error.message });
+    errorCoAP(`RSA decryption failed`, { 
+      error: error.message,
+      payloadLength: encryptedBuffer?.length || 0,
+    });
     return null;
   }
 }
 
-/**
- * Détecte si un payload est encrypté (binaire) ou en JSON clair
- * Retourne true si le payload semble être encrypté
- */
-function isEncrypted(payload: Buffer): boolean {
-  if (!payload || payload.length === 0) {
-    return false;
-  }
-
-  // Si le payload est très court (< 16 bytes), ce n'est probablement pas encrypté
-  if (payload.length < 16) {
-    return false;
-  }
-
-  // Tenter de parser comme JSON
-  try {
-    const str = payload.toString('utf8');
-    JSON.parse(str);
-    // Si ça parse en JSON, ce n'est pas encrypté
-    return false;
-  } catch {
-    // Si ça ne parse pas en JSON, c'est probablement encrypté
-    // Vérifier aussi que ce n'est pas juste un JSON malformé
-    // En général, un payload encrypté commence par des bytes non-printables
-    const firstByte = payload[0];
-    // Les bytes encryptés sont souvent non-printables (< 32) ou > 126
-    // Mais un JSON peut aussi commencer par '{' (123) ou '[' (91)
-    // On considère encrypté si les premiers bytes ne sont pas des caractères JSON typiques
-    if (firstByte === 0x7B || firstByte === 0x5B || firstByte === 0x22) {
-      // '{', '[', ou '"' - probablement du JSON
-      return false;
-    }
-    return true;
-  }
-}
-
-/**
- * Parse l'URL CoAP pour extraire le device ID
- * Format attendu: /devices/{id}/value
- */
-function parseDeviceIdFromUrl(url: string): string | null {
-  try {
-    // Enlever le query string si présent
-    const path = url.split('?')[0];
-    const parts = path.split('/').filter((p) => p);
-    
-    // Chercher le pattern /devices/{id}/value
-    const devicesIndex = parts.indexOf('devices');
-    if (devicesIndex !== -1 && devicesIndex + 1 < parts.length) {
-      const deviceId = parts[devicesIndex + 1];
-      const nextPart = parts[devicesIndex + 2];
-      if (nextPart === 'value') {
-        return deviceId;
-      }
-    }
-  } catch (e: any) {
-    errorCoAP('Error parsing URL', e);
-  }
-  return null;
-}
 
 /**
  * Crée et démarre le serveur CoAP
@@ -294,15 +175,13 @@ function parseDeviceIdFromUrl(url: string): string | null {
 export function createCoAPServer() {
   const server = coap.createServer((req: CoAPRequest, res: CoAPResponse) => {
     const rsinfo = req.rsinfo as { address: string; port: number; family?: string };
-    const payloadRaw = req.payload ? req.payload.toString() : '';
     
     logCoAP(`REQUEST: ${req.method} ${req.url}`, {
       from: `${rsinfo.address}:${rsinfo.port}`,
-      payloadRaw: payloadRaw || '(empty)',
       payloadLength: req.payload ? req.payload.length : 0,
     });
 
-    // Seulement POST est supporté pour l'instant (mise à jour de valeur)
+    // Seulement POST est supporté
     if (req.method !== 'POST') {
       errorCoAP(`Method not allowed: ${req.method}`);
       res.code = '4.05'; // Method Not Allowed
@@ -310,195 +189,131 @@ export function createCoAPServer() {
       return;
     }
 
-    // Authentification d'abord (nécessaire pour vérifier le deviceId)
-    authenticateCoAPRequest(req)
-      .then((auth) => {
-        if (!auth) {
-          errorCoAP(`Authentication failed`);
+    // 1. Déchiffrer le payload d'abord (RSA)
+    const payloadData = decryptPayload(req.payload);
+
+    if (!payloadData) {
+      errorCoAP(`Failed to decrypt payload or payload is unreadable`);
+      res.code = '4.00'; // Bad Request
+      res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
+      return;
+    }
+
+    // 2. Extraire l'API key et le deviceId depuis le payload déchiffré
+    const apiKey = payloadData.apiKey;
+    const deviceId = payloadData.deviceId;
+
+    if (!apiKey) {
+      errorCoAP(`API key missing in decrypted payload`);
+      res.code = '4.01'; // Unauthorized
+      res.end(JSON.stringify({ error: 'API key missing in payload' }));
+      return;
+    }
+
+    if (!deviceId) {
+      errorCoAP(`DeviceId missing in decrypted payload`);
+      res.code = '4.00'; // Bad Request
+      res.end(JSON.stringify({ error: 'DeviceId missing in payload' }));
+      return;
+    }
+
+    logCoAP(`Extracted from decrypted payload`, { 
+      deviceId,
+      apiKeyLength: apiKey.length,
+      hasValue: payloadData.value !== undefined,
+      hasBatteryLevel: payloadData.batteryLevel !== undefined,
+    });
+
+    // 3. Authentifier avec l'API key
+    verifyApiKey(apiKey)
+      .then(async (verified) => {
+        if (!verified) {
+          errorCoAP(`API key verification failed`, { 
+            apiKeyLength: apiKey.length,
+            apiKeyPrefix: apiKey.substring(0, 20) + '...',
+          });
           res.code = '4.01'; // Unauthorized
-          res.end(JSON.stringify({ error: 'API key missing or invalid. Provide ?apiKey=... in URL or in payload.' }));
-          return;
-        }
-        logCoAP(`Authentication successful`, { userId: auth.userId });
-
-        // Parser le payload (avec support du décryptage)
-        let payloadData: any;
-        try {
-          if (!req.payload || req.payload.length === 0) {
-            payloadData = {};
-            logCoAP(`Empty payload, using default {}`);
-          } else {
-            // Détecter si le payload est encrypté
-            const isEncryptedPayload = isEncrypted(req.payload);
-            
-            let payloadStr: string;
-            if (isEncryptedPayload) {
-              logCoAP(`Payload appears to be encrypted, attempting decryption...`, {
-                payloadLength: req.payload.length,
-              });
-              
-              const decrypted = decryptPayload(req.payload);
-              if (!decrypted) {
-                errorCoAP(`Failed to decrypt payload`);
-                res.code = '4.00'; // Bad Request
-                res.end(JSON.stringify({ error: 'Failed to decrypt payload. Check encryption key.' }));
-                return;
-              }
-              
-              payloadStr = decrypted;
-              logCoAP(`Payload decrypted successfully`, { decryptedLength: payloadStr.length });
-            } else {
-              // Payload en JSON clair
-              payloadStr = req.payload.toString('utf8');
-              logCoAP(`Payload is plain JSON (not encrypted)`);
-            }
-            
-            if (!payloadStr || payloadStr.trim() === '') {
-              payloadData = {};
-              logCoAP(`Empty payload after decryption/parsing, using default {}`);
-            } else {
-              payloadData = JSON.parse(payloadStr);
-              logCoAP(`Parsed payload`, payloadData);
-            }
-          }
-        } catch (e: any) {
-          errorCoAP(`Error parsing payload`, { 
-            error: e.message, 
-            payloadRaw: payloadRaw.substring(0, 100), // Limiter la taille du log
-            payloadLength: req.payload ? req.payload.length : 0,
-          });
-          res.code = '4.00'; // Bad Request
-          res.end(JSON.stringify({ error: 'Invalid JSON payload or decryption failed' }));
+          res.end(JSON.stringify({ error: 'API key invalid or expired' }));
           return;
         }
 
-        // Extraire le deviceId : PRIORITÉ au payload, puis fallback sur l'URL
-        let deviceId: string | null = null;
-        
-        // PRIORITÉ 1: Depuis le payload (méthode principale)
-        if (payloadData.deviceId) {
-          deviceId = payloadData.deviceId;
-          logCoAP(`DeviceId found in payload: ${deviceId}`);
-        }
-        
-        // FALLBACK: Depuis l'URL seulement si pas trouvé dans le payload
-        if (!deviceId) {
-          // Méthode 1: Depuis l'URL /devices/{id}/value
-          deviceId = parseDeviceIdFromUrl(req.url);
-          
-          // Méthode 2: URL directe avec deviceId (format: /{deviceId}?apiKey=...)
-          if (!deviceId) {
-            try {
-              const urlPath = req.url.split('?')[0]; // Enlever le query string
-              const pathParts = urlPath.split('/').filter((p) => p);
-              // Si l'URL est juste un UUID (format deviceId), l'utiliser
-              if (pathParts.length === 1) {
-                const potentialDeviceId = pathParts[0];
-                // Vérifier si ça ressemble à un UUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
-                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                if (uuidRegex.test(potentialDeviceId)) {
-                  deviceId = potentialDeviceId;
-                  logCoAP(`DeviceId extracted from direct URL path (fallback): ${deviceId}`);
-                }
-              }
-            } catch (e: any) {
-              logCoAP(`Could not parse deviceId from direct URL`, { error: e.message });
-            }
-          } else {
-            logCoAP(`DeviceId extracted from URL path (fallback): ${deviceId}`);
-          }
-        }
-        
-        if (!deviceId) {
-          errorCoAP(`DeviceId not found`, { 
-            url: req.url, 
-            payloadKeys: Object.keys(payloadData),
-            message: 'DeviceId must be in payload (deviceId field) or in URL as fallback'
-          });
-          res.code = '4.00'; // Bad Request
-          res.end(JSON.stringify({ error: 'DeviceId missing. Provide it in payload (deviceId field) or in URL as fallback.' }));
-          return;
-        }
-        
-        logCoAP(`DeviceId resolved: ${deviceId}`);
-
-        // Extraire value et batteryLevel, en excluant apiKey du payload si présent
-        const { value, batteryLevel, apiKey: _apiKey, ...rest } = payloadData;
-        logCoAP(`Extracted values`, { value, batteryLevel, ignoredFields: Object.keys(rest) });
-
-        if (value === undefined || value === null) {
-          errorCoAP(`Missing required field 'value' in payload`, { payloadData });
-          res.code = '4.00'; // Bad Request
-          res.end(JSON.stringify({ error: 'Missing required field: value' }));
-          return;
-        }
-
-        const parsedValue = parseFloat(String(value));
-        const parsedBattery = batteryLevel !== undefined ? parseInt(String(batteryLevel)) : undefined;
-        logCoAP(`Updating device`, { deviceId, value: parsedValue, batteryLevel: parsedBattery });
-
-        // Mettre à jour la valeur du device
-        updateDeviceValue({
+        logCoAP(`Authentication successful`, { 
+          userId: verified.userId, 
+          apiKeyId: verified.apiKeyId,
           deviceId,
-          userId: auth.userId,
+        });
+
+        // 4. Extraire et parser les valeurs
+        const parsedValue = parseFloat(String(payloadData.value));
+        const parsedBattery = payloadData.batteryLevel 
+          ? parseInt(String(payloadData.batteryLevel)) 
+          : undefined;
+
+        if (isNaN(parsedValue)) {
+          errorCoAP(`Invalid value format`, { 
+            value: payloadData.value,
+            valueType: typeof payloadData.value,
+          });
+          res.code = '4.00'; // Bad Request
+          res.end(JSON.stringify({ error: 'Invalid value format. Must be a number.' }));
+          return;
+        }
+
+        logCoAP(`Updating device`, { 
+          deviceId, 
+          value: parsedValue, 
+          batteryLevel: parsedBattery,
+        });
+
+        // 5. Mettre à jour le device
+        const result = await updateDeviceValue({
+          deviceId,
+          userId: verified.userId,
           value: parsedValue,
           batteryLevel: parsedBattery,
-        })
-          .then((result) => {
-            if (!result.success) {
-              errorCoAP(`Update failed for device ${deviceId}`, { error: result.error });
-              res.code = result.error === 'Device non trouvé' ? '4.04' : '5.00'; // Not Found ou Internal Server Error
-              res.end(JSON.stringify({ error: result.error || 'Error updating device' }));
-              return;
-            }
+        });
 
-            // Succès
-            logCoAP(`Device updated successfully`, {
-              deviceId: result.device?.id,
-              value: result.device?.value,
-              status: result.device?.status,
-            });
-            res.code = '2.04'; // Changed
-            res.end(JSON.stringify({
-              success: true,
-              device: {
-                id: result.device?.id,
-                value: result.device?.value,
-                status: result.device?.status,
-              },
-            }));
-          })
-          .catch((error) => {
-            errorCoAP(`Error in updateDeviceValue`, error);
-            res.code = '5.00'; // Internal Server Error
-            res.end(JSON.stringify({ error: 'Internal server error' }));
-          });
+        if (!result.success) {
+          errorCoAP(`Update failed for device ${deviceId}`, { error: result.error });
+          res.code = result.error === 'Device non trouvé' ? '4.04' : '5.00'; // Not Found ou Internal Server Error
+          res.end(JSON.stringify({ error: result.error || 'Error updating device' }));
+          return;
+        }
+
+        // Succès
+        logCoAP(`Device updated successfully`, {
+          deviceId: result.device?.id,
+          value: result.device?.value,
+          status: result.device?.status,
+        });
+
+        res.code = '2.04'; // Changed
+        res.end(JSON.stringify({
+          success: true,
+          device: {
+            id: result.device?.id,
+            value: result.device?.value,
+            status: result.device?.status,
+          },
+        }));
       })
-      .catch((error) => {
-        errorCoAP(`Error in authentication`, error);
+      .catch((err) => {
+        errorCoAP(`Error during authentication or update`, err);
         res.code = '5.00'; // Internal Server Error
-        res.end(JSON.stringify({ error: 'Authentication error' }));
+        res.end(JSON.stringify({ error: 'Internal server error' }));
       });
   });
 
   server.listen(COAP_PORT, () => {
-    console.log(`📡 CoAP server listening on port ${COAP_PORT} (UDP)`);
-    console.log(`   Endpoints:`);
-    console.log(`     - coap://0.0.0.0:${COAP_PORT}/value (RECOMMANDÉ: deviceId in payload)`);
-    console.log(`     - coap://0.0.0.0:${COAP_PORT}/devices/{deviceId}/value (fallback)`);
-    console.log(`     - coap://0.0.0.0:${COAP_PORT}/{deviceId} (fallback)`);
+    console.log(`📡 Secure CoAP server listening on port ${COAP_PORT} (UDP)`);
     console.log(`   Method: POST`);
-    console.log(`   Auth: API key via ?apiKey=... or in payload`);
-    console.log(`   ⚠️  DeviceId: PRIORITÉ au payload, URL en fallback uniquement`);
-    console.log(`   🔐 Encryption: AES-256-CTR supported (auto-detect)`);
-    console.log(`   🔑 Encryption key: ${ENCRYPTION_KEY.substring(0, 8)}... (${ENCRYPTION_KEY.length} chars)`);
-    if (ENCRYPTION_KEY === '12345678901234567890123456789012') {
-      console.log(`   ⚠️  WARNING: Using default encryption key! Set COAP_ENCRYPTION_KEY env var in production!`);
-    }
-    console.log(`   ✅ CoAP server is ready to receive requests`);
+    console.log(`   🔐 Encryption: RSA (PKCS1 padding)`);
+    console.log(`   🔑 Private key: Loaded successfully`);
+    console.log(`   📋 Payload format: Encrypted JSON with deviceId, apiKey, value, batteryLevel`);
+    console.log(`   ✅ CoAP server is ready to receive encrypted requests`);
     console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
     console.log(`   📝 Logs are written to database (event_logs table)`);
-    logCoAP('CoAP server started', { port: COAP_PORT });
+    logCoAP('CoAP server started', { port: COAP_PORT, encryption: 'RSA' });
   });
 
   server.on('error', (err: any) => {

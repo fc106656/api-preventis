@@ -10,3 +10,7 @@ dist/
 # Log files
 logs/
 *.log
+
+# Private keys (RSA)
+private_key.pem
+*.pem
