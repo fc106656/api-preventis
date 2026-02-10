@@ -253,18 +253,29 @@ export function createCoAPServer() {
   const server = coap.createServer((req: CoAPRequest, res: CoAPResponse) => {
     const rsinfo = req.rsinfo as { address: string; port: number; family?: string };
     
+    // Gérer les requêtes GET pour récupérer les paramètres
+    // Vérifier de manière très permissive - accepter GET sous toutes ses formes
+    const methodRaw = req.method;
+    const methodStr = String(methodRaw || '').trim().toUpperCase();
+    const methodCode = typeof methodRaw === 'number' ? methodRaw : null;
+    
+    // Vérifications multiples pour être sûr de détecter GET
+    const isGET = methodStr === 'GET' || 
+                  methodStr.includes('GET') || 
+                  methodCode === 1 ||
+                  String(methodRaw).toUpperCase() === 'GET' ||
+                  (methodRaw as any)?.toString?.()?.toUpperCase?.() === 'GET';
+    
     logCoAP(`REQUEST: ${req.method} ${req.url}`, {
       from: `${rsinfo.address}:${rsinfo.port}`,
       payloadLength: req.payload ? req.payload.length : 0,
+      methodRaw: methodRaw,
+      methodType: typeof methodRaw,
+      methodStr: methodStr,
+      methodCode: methodCode,
+      isGET: isGET,
+      url: req.url,
     });
-
-    // Gérer les requêtes GET pour récupérer les paramètres
-    // Vérifier de manière très permissive pour éviter les problèmes de typage
-    const methodStr = String(req.method || '').trim().toUpperCase();
-    const methodCode = typeof req.method === 'number' ? req.method : null;
-    const isGET = methodStr === 'GET' || 
-                  methodStr.includes('GET') || 
-                  methodCode === 1;
     
     if (isGET) {
       logCoAP(`Processing GET request`, { url: req.url });
