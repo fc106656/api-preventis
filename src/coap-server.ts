@@ -253,44 +253,36 @@ export function createCoAPServer() {
   const server = coap.createServer((req: CoAPRequest, res: CoAPResponse) => {
     const rsinfo = req.rsinfo as { address: string; port: number; family?: string };
     
-    // Gérer les requêtes GET pour récupérer les paramètres
-    // Vérifier de manière très permissive - accepter GET sous toutes ses formes
-    const methodRaw = req.method;
-    const methodStr = String(methodRaw || '').trim().toUpperCase();
-    const methodCode = typeof methodRaw === 'number' ? methodRaw : null;
-    
-    // Vérifications multiples pour être sûr de détecter GET
-    const isGET = methodStr === 'GET' || 
-                  methodStr.includes('GET') || 
-                  methodCode === 1 ||
-                  String(methodRaw).toUpperCase() === 'GET' ||
-                  (methodRaw as any)?.toString?.()?.toUpperCase?.() === 'GET';
-    
     logCoAP(`REQUEST: ${req.method} ${req.url}`, {
       from: `${rsinfo.address}:${rsinfo.port}`,
       payloadLength: req.payload ? req.payload.length : 0,
-      methodRaw: methodRaw,
-      methodType: typeof methodRaw,
-      methodStr: methodStr,
-      methodCode: methodCode,
-      isGET: isGET,
       url: req.url,
     });
+
+    // Gérer les requêtes POST (MicroPython ne peut pas envoyer de payload avec GET)
+    // POST peut être utilisé pour :
+    // 1. Récupérer les paramètres (payload avec juste apiKey, sans deviceId ni value)
+    // 2. Envoyer des données capteur (payload avec deviceId, apiKey, value)
+    const methodRaw = req.method;
+    const methodStr = String(methodRaw || '').trim().toUpperCase();
+    const methodCode = typeof methodRaw === 'number' ? methodRaw : null;
+    const isPOST = methodStr === 'POST' || methodCode === 2;
     
-    if (isGET) {
-      logCoAP(`Processing GET request`, { url: req.url });
-      // Pour GET, l'API key doit être dans le payload encrypté (AES-256-CBC)
+    if (isPOST) {
+      // Vérifier si c'est une requête pour récupérer les paramètres (pas d'envoi de données capteur)
+      // On détecte ça par l'absence de deviceId et value dans le payload
+      
       if (!req.payload || req.payload.length === 0) {
-        errorCoAP(`Empty payload in GET request`);
+        errorCoAP(`Empty payload in POST request`);
         res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'API key required in encrypted payload. Send JSON: {"apiKey": "your-key"} encrypted with AES-256-CBC' }));
+        res.end(JSON.stringify({ error: 'Payload required' }));
         return;
       }
 
       // Déchiffrer le payload
       const payloadData = decryptPayload(req.payload);
       if (!payloadData) {
-        errorCoAP(`Failed to decrypt payload in GET request`);
+        errorCoAP(`Failed to decrypt payload in POST request`);
         res.code = '4.00'; // Bad Request
         res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
         return;
@@ -300,59 +292,68 @@ export function createCoAPServer() {
       if (!apiKey) {
         errorCoAP(`API key missing in decrypted payload`);
         res.code = '4.01'; // Unauthorized
-        res.end(JSON.stringify({ error: 'API key required in payload. Send JSON: {"apiKey": "your-key"} encrypted with AES-256-CBC' }));
+        res.end(JSON.stringify({ error: 'API key required in payload' }));
         return;
       }
 
-      // Authentifier avec l'API key
-      verifyApiKey(apiKey)
-        .then(async (verified) => {
-          if (!verified) {
-            errorCoAP(`API key verification failed for GET request`);
-            res.code = '4.01'; // Unauthorized
-            res.end(JSON.stringify({ error: 'API key invalid or expired' }));
-            return;
-          }
+      // Si pas de deviceId ni value, c'est une requête pour récupérer les paramètres
+      const isParameterRequest = !payloadData.deviceId && payloadData.value === undefined;
 
-          logCoAP(`GET request authenticated`, {
-            userId: verified.userId,
-            apiKeyId: verified.apiKeyId,
-            url: req.url,
+      if (isParameterRequest) {
+        // Requête pour récupérer les paramètres de l'alarme
+        logCoAP(`Parameter request detected`, { url: req.url });
+        
+        verifyApiKey(apiKey)
+          .then(async (verified) => {
+            if (!verified) {
+              errorCoAP(`API key verification failed for parameter request`);
+              res.code = '4.01'; // Unauthorized
+              res.end(JSON.stringify({ error: 'API key invalid or expired' }));
+              return;
+            }
+
+            logCoAP(`Parameter request authenticated`, {
+              userId: verified.userId,
+              apiKeyId: verified.apiKeyId,
+              url: req.url,
+            });
+
+            // Récupérer tous les paramètres
+            const parameters = await getAlarmParameters(verified.userId);
+
+            logCoAP(`Alarm parameters retrieved`, {
+              alarmMode: parameters.alarm.mode,
+              alarmArmed: parameters.alarm.isArmed,
+              sirenActive: parameters.alarm.sirenActive,
+            });
+
+            res.code = '2.04'; // Changed (même code que pour POST)
+            res.end(JSON.stringify(parameters));
+          })
+          .catch((err) => {
+            errorCoAP(`Error during parameter request processing`, {
+              error: err?.message || String(err),
+              errorStack: err?.stack?.substring(0, 300),
+            });
+            res.code = '5.00'; // Internal Server Error
+            res.end(JSON.stringify({ error: 'Internal server error' }));
           });
 
-          // Récupérer tous les paramètres
-          const parameters = await getAlarmParameters(verified.userId);
+        return;
+      }
+      
+      // Sinon, c'est une requête normale d'envoi de données capteur (code ci-dessous)
+    }
 
-          logCoAP(`Alarm parameters retrieved`, {
-            alarmMode: parameters.alarm.mode,
-            alarmArmed: parameters.alarm.isArmed,
-            sirenActive: parameters.alarm.sirenActive,
-          });
-
-          res.code = '2.05'; // Content
-          res.end(JSON.stringify(parameters));
-        })
-        .catch((err) => {
-          errorCoAP(`Error during GET request processing`, {
-            error: err?.message || String(err),
-            errorStack: err?.stack?.substring(0, 300),
-          });
-          res.code = '5.00'; // Internal Server Error
-          res.end(JSON.stringify({ error: 'Internal server error' }));
-        });
-
+    // Si on arrive ici et que ce n'est pas POST, c'est une erreur
+    if (!isPOST) {
+      errorCoAP(`Method not allowed: ${req.method} (type: ${typeof req.method}, normalized: ${methodStr}, code: ${methodCode})`);
+      res.code = '4.05'; // Method Not Allowed
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
       return;
     }
 
     // Gérer les requêtes POST (envoi de données depuis les capteurs)
-    // node-coap peut utiliser des codes numériques: 1=GET, 2=POST
-    const isPOST = methodStr === 'POST' || methodCode === 2;
-    if (!isPOST) {
-      errorCoAP(`Method not allowed: ${req.method} (type: ${typeof req.method}, normalized: ${methodStr}, code: ${methodCode})`);
-      res.code = '4.05'; // Method Not Allowed
-      res.end(JSON.stringify({ error: 'Method not allowed. Use GET or POST.' }));
-      return;
-    }
 
     // 1. Déchiffrer le payload d'abord (RSA)
     const payloadData = decryptPayload(req.payload);
