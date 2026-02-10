@@ -297,15 +297,28 @@ export function createCoAPServer() {
       }
 
       // Détecter le type de requête :
-      // - Si l'URL contient "status" OU si le payload n'a PAS de deviceId ni value → récupération des paramètres
+      // - Si l'URL contient "status" → FORCÉMENT récupération des paramètres
+      // - Sinon, si le payload n'a PAS de deviceId ni value → récupération des paramètres
       // - Sinon → envoi de données capteur
-      const isParameterRequest = (req.url === '/status' || req.url?.includes('status')) || 
-                                 (!payloadData.deviceId && payloadData.value === undefined);
+      const hasDeviceId = !!payloadData.deviceId;
+      const hasValue = payloadData.value !== undefined;
+      const isStatusUrl = req.url === '/status' || req.url?.includes('status');
+      // Priorité à l'URL : si c'est /status, c'est toujours une requête de paramètres
+      const isParameterRequest = isStatusUrl || (!hasDeviceId && !hasValue);
+
+      logCoAP(`Request type detection`, { 
+        url: req.url, 
+        isStatusUrl: isStatusUrl,
+        hasDeviceId: hasDeviceId, 
+        hasValue: hasValue,
+        isParameterRequest: isParameterRequest,
+        payloadKeys: Object.keys(payloadData),
+      });
 
       if (isParameterRequest) {
         // Requête pour récupérer les paramètres de l'alarme
-        // Payload attendu : {"apiKey": "xxx"} uniquement
-        logCoAP(`Parameter request detected`, { url: req.url, hasDeviceId: !!payloadData.deviceId, hasValue: payloadData.value !== undefined });
+        // Payload attendu : {"apiKey": "xxx"} uniquement (pas de deviceId, pas de value)
+        logCoAP(`Parameter request detected - processing`, { url: req.url });
         
         verifyApiKey(apiKey)
           .then(async (verified) => {
