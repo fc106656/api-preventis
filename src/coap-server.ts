@@ -284,19 +284,28 @@ export function createCoAPServer() {
       isPOST: isPOST,
     });
     
-    // Détecter aussi par l'absence de deviceId dans le payload (si on peut le déchiffrer)
+    // Pour les requêtes POST, déchiffrer le payload une fois pour détecter le type de requête
+    let payloadData: any = null;
     let isParameterRequest = isStatusUrl;
     
-    if (isPOST && !isStatusUrl && req.payload && req.payload.length > 0) {
-      // Essayer de déchiffrer pour vérifier si c'est une requête de paramètres
-      const testPayload = decryptPayload(req.payload);
-      if (testPayload && testPayload.apiKey && !testPayload.deviceId && testPayload.value === undefined) {
-        // Payload contient seulement apiKey, pas deviceId ni value = requête de paramètres
-        isParameterRequest = true;
-        logCoAP(`🔍 DETECTED BY PAYLOAD - Parameter request (no deviceId, no value)`, {
-          url: req.url,
-          payloadKeys: Object.keys(testPayload),
-        });
+    if (isPOST && req.payload && req.payload.length > 0) {
+      payloadData = decryptPayload(req.payload);
+      
+      if (payloadData) {
+        // Détection par payload : si pas de deviceId et pas de value, c'est une requête de paramètres
+        const hasOnlyApiKey = payloadData.apiKey && !payloadData.deviceId && payloadData.value === undefined;
+        
+        if (hasOnlyApiKey) {
+          isParameterRequest = true;
+          logCoAP(`🔍 DETECTED BY PAYLOAD - Parameter request (no deviceId, no value)`, {
+            url: req.url,
+            urlStr: urlStr,
+            payloadKeys: Object.keys(payloadData),
+            hasApiKey: !!payloadData.apiKey,
+            hasDeviceId: !!payloadData.deviceId,
+            hasValue: payloadData.value !== undefined,
+          });
+        }
       }
     }
     
@@ -316,13 +325,15 @@ export function createCoAPServer() {
         return;
       }
 
-      // Déchiffrer le payload
-      const payloadData = decryptPayload(req.payload);
+      // Utiliser le payload déjà déchiffré ou le déchiffrer
       if (!payloadData) {
-        errorCoAP(`Failed to decrypt payload in status request`);
-        res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
-        return;
+        payloadData = decryptPayload(req.payload);
+        if (!payloadData) {
+          errorCoAP(`Failed to decrypt payload in status request`);
+          res.code = '4.00'; // Bad Request
+          res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
+          return;
+        }
       }
 
       const apiKey = payloadData.apiKey;
@@ -389,13 +400,15 @@ export function createCoAPServer() {
         return;
       }
 
-      // Déchiffrer le payload
-      const payloadData = decryptPayload(req.payload);
+      // Utiliser le payload déjà déchiffré ou le déchiffrer
       if (!payloadData) {
-        errorCoAP(`Failed to decrypt payload in POST request`);
-        res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
-        return;
+        payloadData = decryptPayload(req.payload);
+        if (!payloadData) {
+          errorCoAP(`Failed to decrypt payload in POST request`);
+          res.code = '4.00'; // Bad Request
+          res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
+          return;
+        }
       }
 
       const apiKey = payloadData.apiKey;
