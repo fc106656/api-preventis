@@ -257,6 +257,8 @@ export function createCoAPServer() {
       from: `${rsinfo.address}:${rsinfo.port}`,
       payloadLength: req.payload ? req.payload.length : 0,
       methodType: typeof req.method,
+      methodStringified: JSON.stringify(req.method),
+      methodValue: String(req.method),
     });
 
     // Gérer les requêtes GET pour récupérer les paramètres
@@ -264,6 +266,17 @@ export function createCoAPServer() {
     const method = String(req.method).trim().toUpperCase();
     const methodCode = typeof req.method === 'number' ? req.method : null;
     const isGET = method === 'GET' || methodCode === 1 || String(req.method).toUpperCase().includes('GET');
+    
+    logCoAP(`Method check`, {
+      methodRaw: req.method,
+      methodType: typeof req.method,
+      methodNormalized: method,
+      methodCode: methodCode,
+      isGET: isGET,
+      check1: method === 'GET',
+      check2: methodCode === 1,
+      check3: String(req.method).toUpperCase().includes('GET'),
+    });
     
     if (isGET) {
       logCoAP(`Processing GET request`, { url: req.url });
