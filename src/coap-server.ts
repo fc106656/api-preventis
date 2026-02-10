@@ -302,18 +302,25 @@ export function createCoAPServer() {
       // - Sinon → envoi de données capteur
       const hasDeviceId = !!payloadData.deviceId;
       const hasValue = payloadData.value !== undefined;
-      const isStatusUrl = req.url === '/status' || req.url?.includes('status');
+      const urlStr = String(req.url || '');
+      const isStatusUrl = urlStr === '/status' || urlStr.includes('status');
       // Priorité à l'URL : si c'est /status, c'est toujours une requête de paramètres
       const isParameterRequest = isStatusUrl || (!hasDeviceId && !hasValue);
 
       logCoAP(`Request type detection`, { 
-        url: req.url, 
+        url: req.url,
+        urlStr: urlStr,
         isStatusUrl: isStatusUrl,
         hasDeviceId: hasDeviceId, 
         hasValue: hasValue,
         isParameterRequest: isParameterRequest,
         payloadKeys: Object.keys(payloadData),
       });
+
+      // FORCER la détection si URL contient "status" (pour contourner les problèmes de cache)
+      if (isStatusUrl) {
+        logCoAP(`STATUS URL DETECTED - Forcing parameter request`, { url: req.url });
+      }
 
       if (isParameterRequest) {
         // Requête pour récupérer les paramètres de l'alarme
