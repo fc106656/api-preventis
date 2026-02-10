@@ -284,7 +284,9 @@ export function createCoAPServer() {
       isPOST: isPOST,
     });
     
-    // Pour les requêtes POST, déchiffrer le payload une fois pour détecter le type de requête
+    // Pour les requêtes POST, déchiffrer le payload IMMÉDIATEMENT pour détecter le type de requête
+    // PRIORITÉ ABSOLUE : Si payload contient SEULEMENT apiKey (pas deviceId, pas value), 
+    // c'est FORCÉMENT une requête de paramètres, peu importe l'URL
     let payloadData: any = null;
     let isParameterRequest = isStatusUrl;
     
@@ -292,20 +294,39 @@ export function createCoAPServer() {
       payloadData = decryptPayload(req.payload);
       
       if (payloadData) {
-        // Détection par payload : si pas de deviceId et pas de value, c'est une requête de paramètres
-        const hasOnlyApiKey = payloadData.apiKey && !payloadData.deviceId && payloadData.value === undefined;
+        const payloadKeys = Object.keys(payloadData);
+        const hasApiKey = !!payloadData.apiKey;
+        const hasDeviceId = !!payloadData.deviceId;
+        const hasValue = payloadData.value !== undefined;
+        
+        // Détection STRICTE : payload contient SEULEMENT apiKey (et éventuellement d'autres champs non-requis)
+        // MAIS PAS deviceId ET PAS value
+        const hasOnlyApiKey = hasApiKey && !hasDeviceId && !hasValue;
+        
+        logCoAP(`🔍 PAYLOAD ANALYSIS`, {
+          url: req.url,
+          urlStr: urlStr,
+          payloadKeys: payloadKeys,
+          hasApiKey: hasApiKey,
+          hasDeviceId: hasDeviceId,
+          hasValue: hasValue,
+          hasOnlyApiKey: hasOnlyApiKey,
+          isStatusUrl: isStatusUrl,
+        });
         
         if (hasOnlyApiKey) {
           isParameterRequest = true;
-          logCoAP(`🔍 DETECTED BY PAYLOAD - Parameter request (no deviceId, no value)`, {
+          logCoAP(`✅ FORCE PARAMETER REQUEST - Payload contains only apiKey (no deviceId, no value)`, {
             url: req.url,
             urlStr: urlStr,
-            payloadKeys: Object.keys(payloadData),
-            hasApiKey: !!payloadData.apiKey,
-            hasDeviceId: !!payloadData.deviceId,
-            hasValue: payloadData.value !== undefined,
+            payloadKeys: payloadKeys,
           });
         }
+      } else {
+        logCoAP(`⚠️ Failed to decrypt payload for detection`, {
+          url: req.url,
+          payloadLength: req.payload.length,
+        });
       }
     }
     
@@ -411,6 +432,38 @@ export function createCoAPServer() {
         }
       }
 
+      // VÉRIFICATION FINALE : Si le payload ne contient QUE apiKey (pas deviceId, pas value),
+      // c'est une requête de paramètres, même si on est arrivé ici
+      const hasOnlyApiKey = payloadData.apiKey && !payloadData.deviceId && payloadData.value === undefined;
+      if (hasOnlyApiKey) {
+        logCoAP(`⚠️ LATE DETECTION - Parameter request detected in sensor handler, redirecting...`, {
+          url: req.url,
+          payloadKeys: Object.keys(payloadData),
+        });
+        // Traiter comme une requête de paramètres
+        const apiKey = payloadData.apiKey;
+        verifyApiKey(apiKey)
+          .then(async (verified) => {
+            if (!verified) {
+              errorCoAP(`API key verification failed for parameter request`);
+              res.code = '4.01'; // Unauthorized
+              res.end(JSON.stringify({ error: 'API key invalid or expired' }));
+              return;
+            }
+            const parameters = await getAlarmParameters(verified.userId);
+            res.code = '2.04'; // Changed
+            res.end(JSON.stringify(parameters));
+          })
+          .catch((err) => {
+            errorCoAP(`Error during parameter request processing`, {
+              error: err?.message || String(err),
+            });
+            res.code = '5.00'; // Internal Server Error
+            res.end(JSON.stringify({ error: 'Internal server error' }));
+          });
+        return;
+      }
+
       const apiKey = payloadData.apiKey;
       if (!apiKey) {
         errorCoAP(`API key missing in decrypted payload`);
@@ -424,7 +477,13 @@ export function createCoAPServer() {
       const deviceId = payloadData.deviceId;
 
       if (!deviceId) {
-        errorCoAP(`DeviceId missing in decrypted payload`);
+        errorCoAP(`DeviceId missing in decrypted payload`, {
+          url: req.url,
+          payloadKeys: Object.keys(payloadData),
+          hasApiKey: !!payloadData.apiKey,
+          hasDeviceId: !!payloadData.deviceId,
+          hasValue: payloadData.value !== undefined,
+        });
         res.code = '4.00'; // Bad Request
         res.end(JSON.stringify({ error: 'DeviceId missing in payload' }));
         return;
