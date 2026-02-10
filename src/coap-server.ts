@@ -108,7 +108,7 @@ function errorCoAP(message: string, error?: any) {
 // Types pour les requêtes/réponses CoAP
 type CoAPRequest = coap.IncomingMessage & {
   url: string;
-  method: string;
+  method: string | number; // node-coap peut utiliser string ou code numérique
   payload: Buffer;
 };
 
@@ -256,10 +256,14 @@ export function createCoAPServer() {
     logCoAP(`REQUEST: ${req.method} ${req.url}`, {
       from: `${rsinfo.address}:${rsinfo.port}`,
       payloadLength: req.payload ? req.payload.length : 0,
+      methodType: typeof req.method,
     });
 
     // Gérer les requêtes GET pour récupérer les paramètres
-    if (req.method === 'GET') {
+    // node-coap peut utiliser des codes numériques: 1=GET, 2=POST
+    const method = String(req.method).toUpperCase();
+    const methodCode = typeof req.method === 'number' ? req.method : null;
+    if (method === 'GET' || methodCode === 1) {
       // Pour GET, l'API key doit être dans le payload encrypté (AES-256-CBC)
       if (!req.payload || req.payload.length === 0) {
         errorCoAP(`Empty payload in GET request`);
@@ -326,8 +330,9 @@ export function createCoAPServer() {
     }
 
     // Gérer les requêtes POST (envoi de données depuis les capteurs)
-    if (req.method !== 'POST') {
-      errorCoAP(`Method not allowed: ${req.method}`);
+    // node-coap peut utiliser des codes numériques: 1=GET, 2=POST
+    if (method !== 'POST' && methodCode !== 2) {
+      errorCoAP(`Method not allowed: ${req.method} (type: ${typeof req.method})`);
       res.code = '4.05'; // Method Not Allowed
       res.end(JSON.stringify({ error: 'Method not allowed. Use GET or POST.' }));
       return;
