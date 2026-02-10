@@ -256,27 +256,15 @@ export function createCoAPServer() {
     logCoAP(`REQUEST: ${req.method} ${req.url}`, {
       from: `${rsinfo.address}:${rsinfo.port}`,
       payloadLength: req.payload ? req.payload.length : 0,
-      methodType: typeof req.method,
-      methodStringified: JSON.stringify(req.method),
-      methodValue: String(req.method),
     });
 
     // Gérer les requêtes GET pour récupérer les paramètres
-    // node-coap peut utiliser des codes numériques: 1=GET, 2=POST
-    const method = String(req.method).trim().toUpperCase();
+    // Vérifier de manière très permissive pour éviter les problèmes de typage
+    const methodStr = String(req.method || '').trim().toUpperCase();
     const methodCode = typeof req.method === 'number' ? req.method : null;
-    const isGET = method === 'GET' || methodCode === 1 || String(req.method).toUpperCase().includes('GET');
-    
-    logCoAP(`Method check`, {
-      methodRaw: req.method,
-      methodType: typeof req.method,
-      methodNormalized: method,
-      methodCode: methodCode,
-      isGET: isGET,
-      check1: method === 'GET',
-      check2: methodCode === 1,
-      check3: String(req.method).toUpperCase().includes('GET'),
-    });
+    const isGET = methodStr === 'GET' || 
+                  methodStr.includes('GET') || 
+                  methodCode === 1;
     
     if (isGET) {
       logCoAP(`Processing GET request`, { url: req.url });
@@ -347,15 +335,9 @@ export function createCoAPServer() {
 
     // Gérer les requêtes POST (envoi de données depuis les capteurs)
     // node-coap peut utiliser des codes numériques: 1=GET, 2=POST
-    if (method !== 'POST' && methodCode !== 2) {
-      errorCoAP(`Method not allowed: ${req.method} (type: ${typeof req.method}, normalized: ${method}, code: ${methodCode})`);
-      logCoAP(`DEBUG: GET check failed`, { 
-        methodRaw: req.method, 
-        methodNormalized: method, 
-        methodCode: methodCode,
-        isGET: method === 'GET',
-        isCode1: methodCode === 1,
-      });
+    const isPOST = methodStr === 'POST' || methodCode === 2;
+    if (!isPOST) {
+      errorCoAP(`Method not allowed: ${req.method} (type: ${typeof req.method}, normalized: ${methodStr}, code: ${methodCode})`);
       res.code = '4.05'; // Method Not Allowed
       res.end(JSON.stringify({ error: 'Method not allowed. Use GET or POST.' }));
       return;
