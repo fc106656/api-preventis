@@ -269,80 +269,45 @@ export function createCoAPServer() {
     const isPOST = methodStr === 'POST' || methodCode === 2;
     
     if (isPOST) {
-      // Vérifier si c'est une requête pour récupérer les paramètres (pas d'envoi de données capteur)
-      // On détecte ça par l'absence de deviceId et value dans le payload
-      
-      if (!req.payload || req.payload.length === 0) {
-        errorCoAP(`Empty payload in POST request`);
-        res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'Payload required' }));
-        return;
-      }
-
-      // Déchiffrer le payload
-      const payloadData = decryptPayload(req.payload);
-      if (!payloadData) {
-        errorCoAP(`Failed to decrypt payload in POST request`);
-        res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
-        return;
-      }
-
-      const apiKey = payloadData.apiKey;
-      if (!apiKey) {
-        errorCoAP(`API key missing in decrypted payload`);
-        res.code = '4.01'; // Unauthorized
-        res.end(JSON.stringify({ error: 'API key required in payload' }));
-        return;
-      }
-
-      // Détecter le type de requête :
-      // - Si l'URL contient "status" → FORCÉMENT récupération des paramètres
-      // - Sinon, si le payload n'a PAS de deviceId ni value → récupération des paramètres
-      // - Sinon → envoi de données capteur
-      const hasDeviceId = !!payloadData.deviceId;
-      const hasValue = payloadData.value !== undefined;
+      // Vérifier D'ABORD l'URL pour détecter les requêtes de paramètres
+      // Si l'URL est /status, c'est FORCÉMENT une requête de paramètres, peu importe le payload
       const urlStr = String(req.url || '');
       const isStatusUrl = urlStr === '/status' || urlStr.includes('status');
-      // Priorité à l'URL : si c'est /status, c'est toujours une requête de paramètres
-      const isParameterRequest = isStatusUrl || (!hasDeviceId && !hasValue);
-
-      // Log dans la DB pour debug
-      logCoAP(`Request type detection`, { 
-        url: req.url,
-        urlStr: urlStr,
-        isStatusUrl: isStatusUrl,
-        hasDeviceId: hasDeviceId, 
-        hasValue: hasValue,
-        isParameterRequest: isParameterRequest,
-        payloadKeys: Object.keys(payloadData),
-      });
-
-      // FORCER la détection si URL contient "status" (pour contourner les problèmes de cache)
-      if (isStatusUrl) {
-        logCoAP(`⚠️ STATUS URL DETECTED - Forcing parameter request mode`, { 
-          url: req.url,
-          urlStr: urlStr,
-          willProcessAsParameterRequest: true,
-        });
-      }
       
-      // Log d'erreur aussi pour être sûr qu'on voit quelque chose dans la DB
-      if (!isParameterRequest && (urlStr.includes('status') || urlStr === '/status')) {
-        errorCoAP(`❌ ERROR: Status URL detected but isParameterRequest is FALSE!`, {
-          url: req.url,
-          urlStr: urlStr,
-          isStatusUrl: isStatusUrl,
-          isParameterRequest: isParameterRequest,
-          hasDeviceId: hasDeviceId,
-          hasValue: hasValue,
-        });
-      }
+      if (isStatusUrl) {
+        logCoAP(`STATUS URL detected - Processing as parameter request`, { url: req.url, urlStr: urlStr });
+        
+        if (!req.payload || req.payload.length === 0) {
+          errorCoAP(`Empty payload in status request`);
+          res.code = '4.00'; // Bad Request
+          res.end(JSON.stringify({ error: 'Payload required' }));
+          return;
+        }
 
-      if (isParameterRequest) {
-        // Requête pour récupérer les paramètres de l'alarme
-        // Payload attendu : {"apiKey": "xxx"} uniquement (pas de deviceId, pas de value)
-        logCoAP(`Parameter request detected - processing`, { url: req.url });
+        // Déchiffrer le payload
+        const payloadData = decryptPayload(req.payload);
+        if (!payloadData) {
+          errorCoAP(`Failed to decrypt payload in status request`);
+          res.code = '4.00'; // Bad Request
+          res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
+          return;
+        }
+
+        const apiKey = payloadData.apiKey;
+        if (!apiKey) {
+          errorCoAP(`API key missing in status request payload`);
+          res.code = '4.01'; // Unauthorized
+          res.end(JSON.stringify({ error: 'API key required in payload' }));
+          return;
+        }
+
+        // C'est une requête de paramètres - traiter directement
+        logCoAP(`Processing status/parameter request`, { 
+          url: req.url,
+          hasDeviceId: !!payloadData.deviceId,
+          hasValue: payloadData.value !== undefined,
+          payloadKeys: Object.keys(payloadData),
+        });
         
         verifyApiKey(apiKey)
           .then(async (verified) => {
@@ -368,7 +333,7 @@ export function createCoAPServer() {
               sirenActive: parameters.alarm.sirenActive,
             });
 
-            res.code = '2.04'; // Changed (même code que pour POST)
+            res.code = '2.04'; // Changed
             res.end(JSON.stringify(parameters));
           })
           .catch((err) => {
@@ -383,10 +348,33 @@ export function createCoAPServer() {
         return;
       }
       
-      // Sinon, c'est une requête d'envoi de données capteur
-      // Le payload a déjà été déchiffré plus haut, on continue avec le traitement
-      
-      // Extraire le deviceId depuis le payload déchiffré (apiKey déjà extrait plus haut)
+      // Sinon, c'est une requête normale d'envoi de données capteur
+      if (!req.payload || req.payload.length === 0) {
+        errorCoAP(`Empty payload in POST request`);
+        res.code = '4.00'; // Bad Request
+        res.end(JSON.stringify({ error: 'Payload required' }));
+        return;
+      }
+
+      // Déchiffrer le payload
+      const payloadData = decryptPayload(req.payload);
+      if (!payloadData) {
+        errorCoAP(`Failed to decrypt payload in POST request`);
+        res.code = '4.00'; // Bad Request
+        res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
+        return;
+      }
+
+      const apiKey = payloadData.apiKey;
+      if (!apiKey) {
+        errorCoAP(`API key missing in decrypted payload`);
+        res.code = '4.01'; // Unauthorized
+        res.end(JSON.stringify({ error: 'API key required in payload' }));
+        return;
+      }
+
+      // C'est une requête d'envoi de données capteur (URL n'est pas /status)
+      // Extraire le deviceId depuis le payload déchiffré
       const deviceId = payloadData.deviceId;
 
       if (!deviceId) {
