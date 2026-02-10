@@ -267,8 +267,11 @@ export function createCoAPServer() {
     
     // Vérifier D'ABORD l'URL AVANT tout traitement
     // Si l'URL est /status, c'est FORCÉMENT une requête de paramètres
-    const urlStr = String(req.url || '');
-    const isStatusUrl = urlStr === '/status' || urlStr.includes('status');
+    const urlStr = String(req.url || '').trim();
+    // Détection robuste : /status, status, ou contient "status"
+    const isStatusUrl = urlStr === '/status' 
+      || urlStr === 'status' 
+      || urlStr.toLowerCase().includes('status');
     
     // Log CRITIQUE - doit apparaître dans la DB
     logCoAP(`🔍 URL CHECK - isStatusUrl=${isStatusUrl}`, {
@@ -276,13 +279,35 @@ export function createCoAPServer() {
       urlType: typeof req.url,
       urlStr: urlStr,
       urlEqualsStatus: urlStr === '/status',
-      urlIncludesStatus: urlStr.includes('status'),
+      urlEqualsStatusNoSlash: urlStr === 'status',
+      urlIncludesStatus: urlStr.toLowerCase().includes('status'),
       isPOST: isPOST,
     });
     
-    if (isPOST && isStatusUrl) {
-      // REQUÊTE DE PARAMÈTRES - URL = /status
-      logCoAP(`✅ STATUS URL DETECTED - Processing as parameter request`, { url: req.url, urlStr: urlStr });
+    // Détecter aussi par l'absence de deviceId dans le payload (si on peut le déchiffrer)
+    let isParameterRequest = isStatusUrl;
+    
+    if (isPOST && !isStatusUrl && req.payload && req.payload.length > 0) {
+      // Essayer de déchiffrer pour vérifier si c'est une requête de paramètres
+      const testPayload = decryptPayload(req.payload);
+      if (testPayload && testPayload.apiKey && !testPayload.deviceId && testPayload.value === undefined) {
+        // Payload contient seulement apiKey, pas deviceId ni value = requête de paramètres
+        isParameterRequest = true;
+        logCoAP(`🔍 DETECTED BY PAYLOAD - Parameter request (no deviceId, no value)`, {
+          url: req.url,
+          payloadKeys: Object.keys(testPayload),
+        });
+      }
+    }
+    
+    if (isPOST && isParameterRequest) {
+      // REQUÊTE DE PARAMÈTRES - URL = /status OU payload sans deviceId
+      logCoAP(`✅ PARAMETER REQUEST DETECTED - Processing as parameter request`, { 
+        url: req.url, 
+        urlStr: urlStr,
+        detectedByUrl: isStatusUrl,
+        detectedByPayload: !isStatusUrl,
+      });
       
       if (!req.payload || req.payload.length === 0) {
         errorCoAP(`Empty payload in status request`);
