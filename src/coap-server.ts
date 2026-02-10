@@ -221,7 +221,7 @@ function decryptPayload(encryptedBuffer: Buffer): any {
  */
 async function getAlarmParameters(userId: string) {
   try {
-    // 1. État de l'alarme (commandes à appliquer)
+    // État de l'alarme (commandes à appliquer)
     let alarmState = await prisma.alarmState.findUnique({
       where: { id: 'main' },
     });
@@ -232,24 +232,12 @@ async function getAlarmParameters(userId: string) {
       });
     }
 
-    // 2. Zones de surveillance (commandes d'armement)
-    const zones = await prisma.zone.findMany({
-      orderBy: { name: 'asc' },
-    });
-
-    const zonesData = zones.map((zone) => ({
-      id: zone.id,
-      name: zone.name,
-      isArmed: zone.isArmed, // Commande : armer ou désarmer cette zone
-    }));
-
     return {
       alarm: {
-        isArmed: alarmState.isArmed,      // Commande : armer/désarmer le système
+        isArmed: alarmState.isArmed,      // Commande : armer/désarmer le système (tout ou rien)
         mode: alarmState.mode,             // Commande : mode (OFF, HOME, AWAY, NIGHT)
         sirenActive: alarmState.sirenActive, // Commande : activer/désactiver la sirène
       },
-      zones: zonesData, // Commandes d'armement par zone
       timestamp: new Date().toISOString(),
     };
   } catch (error: any) {
@@ -320,7 +308,6 @@ export function createCoAPServer() {
             alarmMode: parameters.alarm.mode,
             alarmArmed: parameters.alarm.isArmed,
             sirenActive: parameters.alarm.sirenActive,
-            zonesCount: parameters.zones.length,
           });
 
           res.code = '2.05'; // Content
