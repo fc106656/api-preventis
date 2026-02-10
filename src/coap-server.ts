@@ -260,118 +260,55 @@ export function createCoAPServer() {
     });
 
     // Gérer les requêtes POST (MicroPython ne peut pas envoyer de payload avec GET)
+    // POST peut être utilisé pour :
+    // 1. Récupérer les paramètres (payload avec juste apiKey, sans deviceId ni value)
+    // 2. Envoyer des données capteur (payload avec deviceId, apiKey, value)
     const methodRaw = req.method;
     const methodStr = String(methodRaw || '').trim().toUpperCase();
     const methodCode = typeof methodRaw === 'number' ? methodRaw : null;
     const isPOST = methodStr === 'POST' || methodCode === 2;
     
-    // Vérifier D'ABORD l'URL AVANT tout traitement
-    // Si l'URL est /status, c'est FORCÉMENT une requête de paramètres
-    const urlStr = String(req.url || '').trim();
-    // Détection robuste : /status, status, ou contient "status"
-    const isStatusUrl = urlStr === '/status' 
-      || urlStr === 'status' 
-      || urlStr.toLowerCase().includes('status');
-    
-    // Log CRITIQUE - doit apparaître dans la DB
-    logCoAP(`🔍 URL CHECK - isStatusUrl=${isStatusUrl}`, {
-      url: req.url,
-      urlType: typeof req.url,
-      urlStr: urlStr,
-      urlEqualsStatus: urlStr === '/status',
-      urlEqualsStatusNoSlash: urlStr === 'status',
-      urlIncludesStatus: urlStr.toLowerCase().includes('status'),
-      isPOST: isPOST,
-    });
-    
-    // Pour les requêtes POST, déchiffrer le payload IMMÉDIATEMENT pour détecter le type de requête
-    // PRIORITÉ ABSOLUE : Si payload contient SEULEMENT apiKey (pas deviceId, pas value), 
-    // c'est FORCÉMENT une requête de paramètres, peu importe l'URL
-    let payloadData: any = null;
-    let isParameterRequest = isStatusUrl;
-    
-    if (isPOST && req.payload && req.payload.length > 0) {
-      payloadData = decryptPayload(req.payload);
-      
-      if (payloadData) {
-        const payloadKeys = Object.keys(payloadData);
-        const hasApiKey = !!payloadData.apiKey;
-        const hasDeviceId = !!payloadData.deviceId;
-        const hasValue = payloadData.value !== undefined;
-        
-        // Détection STRICTE : payload contient SEULEMENT apiKey (et éventuellement d'autres champs non-requis)
-        // MAIS PAS deviceId ET PAS value
-        const hasOnlyApiKey = hasApiKey && !hasDeviceId && !hasValue;
-        
-        logCoAP(`🔍 PAYLOAD ANALYSIS`, {
-          url: req.url,
-          urlStr: urlStr,
-          payloadKeys: payloadKeys,
-          hasApiKey: hasApiKey,
-          hasDeviceId: hasDeviceId,
-          hasValue: hasValue,
-          hasOnlyApiKey: hasOnlyApiKey,
-          isStatusUrl: isStatusUrl,
-        });
-        
-        if (hasOnlyApiKey) {
-          isParameterRequest = true;
-          logCoAP(`✅ FORCE PARAMETER REQUEST - Payload contains only apiKey (no deviceId, no value)`, {
-            url: req.url,
-            urlStr: urlStr,
-            payloadKeys: payloadKeys,
-          });
-        }
-      } else {
-        logCoAP(`⚠️ Failed to decrypt payload for detection`, {
-          url: req.url,
-          payloadLength: req.payload.length,
-        });
-      }
+    if (!isPOST) {
+      errorCoAP(`Method not allowed: ${req.method}`);
+      res.code = '4.05'; // Method Not Allowed
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
     }
-    
-    if (isPOST && isParameterRequest) {
-      // REQUÊTE DE PARAMÈTRES - URL = /status OU payload sans deviceId
-      logCoAP(`✅ PARAMETER REQUEST DETECTED - Processing as parameter request`, { 
-        url: req.url, 
-        urlStr: urlStr,
-        detectedByUrl: isStatusUrl,
-        detectedByPayload: !isStatusUrl,
-      });
-      
-      if (!req.payload || req.payload.length === 0) {
-        errorCoAP(`Empty payload in status request`);
-        res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'Payload required' }));
-        return;
-      }
 
-      // Utiliser le payload déjà déchiffré ou le déchiffrer
-      if (!payloadData) {
-        payloadData = decryptPayload(req.payload);
-        if (!payloadData) {
-          errorCoAP(`Failed to decrypt payload in status request`);
-          res.code = '4.00'; // Bad Request
-          res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
-          return;
-        }
-      }
+    // Vérifier que le payload existe
+    if (!req.payload || req.payload.length === 0) {
+      errorCoAP(`Empty payload in POST request`);
+      res.code = '4.00'; // Bad Request
+      res.end(JSON.stringify({ error: 'Payload required' }));
+      return;
+    }
 
-      const apiKey = payloadData.apiKey;
-      if (!apiKey) {
-        errorCoAP(`API key missing in status request payload`);
-        res.code = '4.01'; // Unauthorized
-        res.end(JSON.stringify({ error: 'API key required in payload' }));
-        return;
-      }
+    // Déchiffrer le payload UNE SEULE FOIS
+    const payloadData = decryptPayload(req.payload);
+    if (!payloadData) {
+      errorCoAP(`Failed to decrypt payload`);
+      res.code = '4.00'; // Bad Request
+      res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
+      return;
+    }
 
-      // C'est une requête de paramètres - traiter directement
-      logCoAP(`Processing status/parameter request`, { 
-        url: req.url,
-        hasDeviceId: !!payloadData.deviceId,
-        hasValue: payloadData.value !== undefined,
-        payloadKeys: Object.keys(payloadData),
-      });
+    const apiKey = payloadData.apiKey;
+    if (!apiKey) {
+      errorCoAP(`API key missing in payload`);
+      res.code = '4.01'; // Unauthorized
+      res.end(JSON.stringify({ error: 'API key required in payload' }));
+      return;
+    }
+
+    // DÉTECTION : Si pas de deviceId ET pas de value = requête de paramètres
+    const hasDeviceId = !!payloadData.deviceId;
+    const hasValue = payloadData.value !== undefined;
+    const isParameterRequest = !hasDeviceId && !hasValue;
+
+    if (isParameterRequest) {
+      // ========== FLUX 1 : RÉCUPÉRATION DES PARAMÈTRES ==========
+      // Payload: {"apiKey": "xxx"} seulement
+      logCoAP(`Parameter request detected`, { url: req.url });
       
       verifyApiKey(apiKey)
         .then(async (verified) => {
@@ -411,93 +348,27 @@ export function createCoAPServer() {
 
       return;
     }
-    
-    // Sinon, c'est une requête normale d'envoi de données capteur
-    if (isPOST) {
-      if (!req.payload || req.payload.length === 0) {
-        errorCoAP(`Empty payload in POST request`);
-        res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'Payload required' }));
-        return;
-      }
 
-      // Utiliser le payload déjà déchiffré ou le déchiffrer
-      if (!payloadData) {
-        payloadData = decryptPayload(req.payload);
-        if (!payloadData) {
-          errorCoAP(`Failed to decrypt payload in POST request`);
-          res.code = '4.00'; // Bad Request
-          res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
-          return;
-        }
-      }
+    // ========== FLUX 2 : ENVOI DE DONNÉES CAPTEUR ==========
+    // Payload: {"deviceId": "xxx", "apiKey": "xxx", "value": 123, "batteryLevel": 80}
+    const deviceId = payloadData.deviceId;
 
-      // VÉRIFICATION FINALE : Si le payload ne contient QUE apiKey (pas deviceId, pas value),
-      // c'est une requête de paramètres, même si on est arrivé ici
-      const hasOnlyApiKey = payloadData.apiKey && !payloadData.deviceId && payloadData.value === undefined;
-      if (hasOnlyApiKey) {
-        logCoAP(`⚠️ LATE DETECTION - Parameter request detected in sensor handler, redirecting...`, {
-          url: req.url,
-          payloadKeys: Object.keys(payloadData),
-        });
-        // Traiter comme une requête de paramètres
-        const apiKey = payloadData.apiKey;
-        verifyApiKey(apiKey)
-          .then(async (verified) => {
-            if (!verified) {
-              errorCoAP(`API key verification failed for parameter request`);
-              res.code = '4.01'; // Unauthorized
-              res.end(JSON.stringify({ error: 'API key invalid or expired' }));
-              return;
-            }
-            const parameters = await getAlarmParameters(verified.userId);
-            res.code = '2.04'; // Changed
-            res.end(JSON.stringify(parameters));
-          })
-          .catch((err) => {
-            errorCoAP(`Error during parameter request processing`, {
-              error: err?.message || String(err),
-            });
-            res.code = '5.00'; // Internal Server Error
-            res.end(JSON.stringify({ error: 'Internal server error' }));
-          });
-        return;
-      }
+    if (!deviceId) {
+      errorCoAP(`DeviceId missing in decrypted payload`);
+      res.code = '4.00'; // Bad Request
+      res.end(JSON.stringify({ error: 'DeviceId missing in payload' }));
+      return;
+    }
 
-      const apiKey = payloadData.apiKey;
-      if (!apiKey) {
-        errorCoAP(`API key missing in decrypted payload`);
-        res.code = '4.01'; // Unauthorized
-        res.end(JSON.stringify({ error: 'API key required in payload' }));
-        return;
-      }
-
-      // C'est une requête d'envoi de données capteur (URL n'est pas /status)
-      // Extraire le deviceId depuis le payload déchiffré
-      const deviceId = payloadData.deviceId;
-
-      if (!deviceId) {
-        errorCoAP(`DeviceId missing in decrypted payload`, {
-          url: req.url,
-          payloadKeys: Object.keys(payloadData),
-          hasApiKey: !!payloadData.apiKey,
-          hasDeviceId: !!payloadData.deviceId,
-          hasValue: payloadData.value !== undefined,
-        });
-        res.code = '4.00'; // Bad Request
-        res.end(JSON.stringify({ error: 'DeviceId missing in payload' }));
-        return;
-      }
-
-      logCoAP(`Extracted from decrypted payload`, { 
+    logCoAP(`Extracted from decrypted payload`, { 
       deviceId,
       apiKeyLength: apiKey.length,
       hasValue: payloadData.value !== undefined,
       hasBatteryLevel: payloadData.batteryLevel !== undefined,
     });
 
-      // 3. Authentifier avec l'API key
-      verifyApiKey(apiKey)
+    // 3. Authentifier avec l'API key
+    verifyApiKey(apiKey)
       .then(async (verified) => {
         if (!verified) {
           errorCoAP(`API key verification failed - key not found or expired`, { 
@@ -580,17 +451,6 @@ export function createCoAPServer() {
         res.code = '5.00'; // Internal Server Error
         res.end(JSON.stringify({ error: 'Internal server error' }));
       });
-      
-      return;
-    }
-
-    // Si on arrive ici et que ce n'est pas POST, c'est une erreur
-    if (!isPOST) {
-      errorCoAP(`Method not allowed: ${req.method}`);
-      res.code = '4.05'; // Method Not Allowed
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
-      return;
-    }
   });
 
   server.listen(COAP_PORT, () => {
