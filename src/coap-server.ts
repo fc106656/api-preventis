@@ -307,6 +307,7 @@ export function createCoAPServer() {
       // Priorité à l'URL : si c'est /status, c'est toujours une requête de paramètres
       const isParameterRequest = isStatusUrl || (!hasDeviceId && !hasValue);
 
+      // Log dans la DB pour debug
       logCoAP(`Request type detection`, { 
         url: req.url,
         urlStr: urlStr,
@@ -319,7 +320,23 @@ export function createCoAPServer() {
 
       // FORCER la détection si URL contient "status" (pour contourner les problèmes de cache)
       if (isStatusUrl) {
-        logCoAP(`STATUS URL DETECTED - Forcing parameter request`, { url: req.url });
+        logCoAP(`⚠️ STATUS URL DETECTED - Forcing parameter request mode`, { 
+          url: req.url,
+          urlStr: urlStr,
+          willProcessAsParameterRequest: true,
+        });
+      }
+      
+      // Log d'erreur aussi pour être sûr qu'on voit quelque chose dans la DB
+      if (!isParameterRequest && (urlStr.includes('status') || urlStr === '/status')) {
+        errorCoAP(`❌ ERROR: Status URL detected but isParameterRequest is FALSE!`, {
+          url: req.url,
+          urlStr: urlStr,
+          isStatusUrl: isStatusUrl,
+          isParameterRequest: isParameterRequest,
+          hasDeviceId: hasDeviceId,
+          hasValue: hasValue,
+        });
       }
 
       if (isParameterRequest) {
