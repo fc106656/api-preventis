@@ -251,6 +251,11 @@ router.get('/:id/history', auth_1.authenticateJWT, async (req, res) => {
                 createdAt: true,
             },
         });
+        // Log pour diagnostiquer
+        console.log(`📊 History retrieved: deviceId=${id}, period=${period}, count=${history.length}, startDate=${startDate.toISOString()}`);
+        if (history.length > 0) {
+            console.log(`📊 First entry: ${history[0].createdAt.toISOString()}, Last entry: ${history[history.length - 1].createdAt.toISOString()}`);
+        }
         res.json(history);
     }
     catch (error) {

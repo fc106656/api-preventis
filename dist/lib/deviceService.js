@@ -47,7 +47,8 @@ async function updateDeviceValue(params) {
             },
         });
         // Enregistrer dans l'historique
-        await prisma_1.default.deviceValueHistory.create({
+        // TOUJOURS enregistrer, même si la valeur est identique, pour avoir un historique complet
+        const historyEntry = await prisma_1.default.deviceValueHistory.create({
             data: {
                 deviceId: deviceId,
                 value: numValue,
@@ -55,6 +56,8 @@ async function updateDeviceValue(params) {
                 ...(batteryLevel !== undefined && { batteryLevel: parseInt(String(batteryLevel)) }),
             },
         });
+        // Log pour diagnostiquer les enregistrements
+        console.log(`📝 History entry created: deviceId=${deviceId}, value=${numValue}, createdAt=${historyEntry.createdAt.toISOString()}`);
         // Créer une alerte si seuil dépassé
         if (newStatus === client_1.DeviceStatus.ALERT && existingDevice.status !== client_1.DeviceStatus.ALERT) {
             let alertType = client_1.AlertType.SYSTEM;

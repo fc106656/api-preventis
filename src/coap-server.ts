@@ -409,12 +409,14 @@ export function createCoAPServer() {
         });
 
         // 5. Mettre à jour le device
+        const updateStartTime = Date.now();
         const result = await updateDeviceValue({
           deviceId,
           userId: verified.userId,
           value: parsedValue,
           batteryLevel: parsedBattery,
         });
+        const updateDuration = Date.now() - updateStartTime;
 
         if (!result.success) {
           errorCoAP(`Update failed for device ${deviceId}`, { error: result.error });
@@ -423,11 +425,13 @@ export function createCoAPServer() {
           return;
         }
 
-        // Succès
+        // Succès - Log détaillé pour diagnostiquer
         logCoAP(`Device updated successfully`, {
           deviceId: result.device?.id,
           value: result.device?.value,
           status: result.device?.status,
+          updateDuration: `${updateDuration}ms`,
+          timestamp: new Date().toISOString(),
         });
 
         res.code = '2.04'; // Changed

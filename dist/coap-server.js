@@ -41,6 +41,7 @@ exports.createCoAPServer = createCoAPServer;
 // Reçoit les données des capteurs via CoAP (UDP port 5683)
 const coap = __importStar(require("coap"));
 const crypto = __importStar(require("crypto"));
+const client_1 = require("@prisma/client");
 const auth_1 = require("./lib/auth");
 const deviceService_1 = require("./lib/deviceService");
 const prisma_1 = __importDefault(require("./lib/prisma"));
@@ -225,6 +226,35 @@ function decryptPayload(encryptedBuffer) {
     }
 }
 /**
+ * Récupère tous les paramètres de commande/configuration pour une gateway
+ * Retourne uniquement ce que le cloud veut envoyer à l'edge, pas les données des capteurs
+ */
+async function getAlarmParameters(userId) {
+    try {
+        // État de l'alarme (commandes à appliquer)
+        let alarmState = await prisma_1.default.alarmState.findUnique({
+            where: { id: 'main' },
+        });
+        if (!alarmState) {
+            alarmState = await prisma_1.default.alarmState.create({
+                data: { id: 'main', isArmed: false, mode: client_1.AlarmMode.OFF, sirenActive: false },
+            });
+        }
+        return {
+            alarm: {
+                isArmed: alarmState.isArmed, // Commande : armer/désarmer le système (tout ou rien)
+                mode: alarmState.mode, // Commande : mode (OFF, HOME, AWAY, NIGHT)
+                sirenActive: alarmState.sirenActive, // Commande : activer/désactiver la sirène
+            },
+            timestamp: new Date().toISOString(),
+        };
+    }
+    catch (error) {
+        errorCoAP(`Error fetching alarm parameters`, { error: error.message });
+        throw error;
+    }
+}
+/**
  * Crée et démarre le serveur CoAP
  */
 function createCoAPServer() {
@@ -233,31 +263,88 @@ function createCoAPServer() {
         logCoAP(`REQUEST: ${req.method} ${req.url}`, {
             from: `${rsinfo.address}:${rsinfo.port}`,
             payloadLength: req.payload ? req.payload.length : 0,
+            url: req.url,
         });
-        // Seulement POST est supporté
-        if (req.method !== 'POST') {
+        // Gérer les requêtes POST (MicroPython ne peut pas envoyer de payload avec GET)
+        // POST peut être utilisé pour :
+        // 1. Récupérer les paramètres (payload avec juste apiKey, sans deviceId ni value)
+        // 2. Envoyer des données capteur (payload avec deviceId, apiKey, value)
+        const methodRaw = req.method;
+        const methodStr = String(methodRaw || '').trim().toUpperCase();
+        const methodCode = typeof methodRaw === 'number' ? methodRaw : null;
+        const isPOST = methodStr === 'POST' || methodCode === 2;
+        if (!isPOST) {
             errorCoAP(`Method not allowed: ${req.method}`);
             res.code = '4.05'; // Method Not Allowed
             res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
             return;
         }
-        // 1. Déchiffrer le payload d'abord (RSA)
+        // Vérifier que le payload existe
+        if (!req.payload || req.payload.length === 0) {
+            errorCoAP(`Empty payload in POST request`);
+            res.code = '4.00'; // Bad Request
+            res.end(JSON.stringify({ error: 'Payload required' }));
+            return;
+        }
+        // Déchiffrer le payload UNE SEULE FOIS
         const payloadData = decryptPayload(req.payload);
         if (!payloadData) {
-            errorCoAP(`Failed to decrypt payload or payload is unreadable`);
+            errorCoAP(`Failed to decrypt payload`);
             res.code = '4.00'; // Bad Request
             res.end(JSON.stringify({ error: 'Decryption failed. Invalid or unencrypted payload.' }));
             return;
         }
-        // 2. Extraire l'API key et le deviceId depuis le payload déchiffré
         const apiKey = payloadData.apiKey;
-        const deviceId = payloadData.deviceId;
         if (!apiKey) {
-            errorCoAP(`API key missing in decrypted payload`);
+            errorCoAP(`API key missing in payload`);
             res.code = '4.01'; // Unauthorized
-            res.end(JSON.stringify({ error: 'API key missing in payload' }));
+            res.end(JSON.stringify({ error: 'API key required in payload' }));
             return;
         }
+        // DÉTECTION : Si pas de deviceId ET pas de value = requête de paramètres
+        const hasDeviceId = !!payloadData.deviceId;
+        const hasValue = payloadData.value !== undefined;
+        const isParameterRequest = !hasDeviceId && !hasValue;
+        if (isParameterRequest) {
+            // ========== FLUX 1 : RÉCUPÉRATION DES PARAMÈTRES ==========
+            // Payload: {"apiKey": "xxx"} seulement
+            logCoAP(`Parameter request detected`, { url: req.url });
+            (0, auth_1.verifyApiKey)(apiKey)
+                .then(async (verified) => {
+                if (!verified) {
+                    errorCoAP(`API key verification failed for parameter request`);
+                    res.code = '4.01'; // Unauthorized
+                    res.end(JSON.stringify({ error: 'API key invalid or expired' }));
+                    return;
+                }
+                logCoAP(`Parameter request authenticated`, {
+                    userId: verified.userId,
+                    apiKeyId: verified.apiKeyId,
+                    url: req.url,
+                });
+                // Récupérer tous les paramètres
+                const parameters = await getAlarmParameters(verified.userId);
+                logCoAP(`Alarm parameters retrieved`, {
+                    alarmMode: parameters.alarm.mode,
+                    alarmArmed: parameters.alarm.isArmed,
+                    sirenActive: parameters.alarm.sirenActive,
+                });
+                res.code = '2.04'; // Changed
+                res.end(JSON.stringify(parameters));
+            })
+                .catch((err) => {
+                errorCoAP(`Error during parameter request processing`, {
+                    error: err?.message || String(err),
+                    errorStack: err?.stack?.substring(0, 300),
+                });
+                res.code = '5.00'; // Internal Server Error
+                res.end(JSON.stringify({ error: 'Internal server error' }));
+            });
+            return;
+        }
+        // ========== FLUX 2 : ENVOI DE DONNÉES CAPTEUR ==========
+        // Payload: {"deviceId": "xxx", "apiKey": "xxx", "value": 123, "batteryLevel": 80}
+        const deviceId = payloadData.deviceId;
         if (!deviceId) {
             errorCoAP(`DeviceId missing in decrypted payload`);
             res.code = '4.00'; // Bad Request
@@ -274,7 +361,7 @@ function createCoAPServer() {
         (0, auth_1.verifyApiKey)(apiKey)
             .then(async (verified) => {
             if (!verified) {
-                errorCoAP(`API key verification failed`, {
+                errorCoAP(`API key verification failed - key not found or expired`, {
                     apiKeyLength: apiKey.length,
                     apiKeyPrefix: apiKey.substring(0, 20) + '...',
                 });
@@ -307,23 +394,27 @@ function createCoAPServer() {
                 batteryLevel: parsedBattery,
             });
             // 5. Mettre à jour le device
+            const updateStartTime = Date.now();
             const result = await (0, deviceService_1.updateDeviceValue)({
                 deviceId,
                 userId: verified.userId,
                 value: parsedValue,
                 batteryLevel: parsedBattery,
             });
+            const updateDuration = Date.now() - updateStartTime;
             if (!result.success) {
                 errorCoAP(`Update failed for device ${deviceId}`, { error: result.error });
                 res.code = result.error === 'Device non trouvé' ? '4.04' : '5.00'; // Not Found ou Internal Server Error
                 res.end(JSON.stringify({ error: result.error || 'Error updating device' }));
                 return;
             }
-            // Succès
+            // Succès - Log détaillé pour diagnostiquer
             logCoAP(`Device updated successfully`, {
                 deviceId: result.device?.id,
                 value: result.device?.value,
                 status: result.device?.status,
+                updateDuration: `${updateDuration}ms`,
+                timestamp: new Date().toISOString(),
             });
             res.code = '2.04'; // Changed
             res.end(JSON.stringify({
@@ -336,22 +427,30 @@ function createCoAPServer() {
             }));
         })
             .catch((err) => {
-            errorCoAP(`Error during authentication or update`, err);
+            // Log l'erreur avec plus de détails pour diagnostiquer
+            errorCoAP(`Error during authentication or update process`, {
+                error: err?.message || String(err),
+                errorStack: err?.stack?.substring(0, 300),
+                deviceId: deviceId,
+                apiKeyLength: apiKey?.length,
+            });
             res.code = '5.00'; // Internal Server Error
             res.end(JSON.stringify({ error: 'Internal server error' }));
         });
     });
     server.listen(COAP_PORT, () => {
         console.log(`📡 Secure CoAP server listening on port ${COAP_PORT} (UDP)`);
-        console.log(`   Method: POST`);
+        console.log(`   Methods: GET (retrieve alarm parameters), POST (send sensor data)`);
         console.log(`   🔐 Encryption: AES-256-CBC (Base64)`);
         console.log(`   🔑 AES Secret: ${AES_SECRET.substring(0, 8)}... (${AES_SECRET.length} chars)`);
-        console.log(`   📋 Payload format: Base64-encoded encrypted JSON (IV + ciphertext)`);
-        console.log(`   📋 JSON fields: deviceId, apiKey, value, batteryLevel`);
+        console.log(`   📋 POST payload format: Base64-encoded encrypted JSON (IV + ciphertext)`);
+        console.log(`   📋 POST JSON fields: deviceId, apiKey, value, batteryLevel`);
+        console.log(`   📋 GET: Returns alarm commands (mode, isArmed, sirenActive) and zones configuration`);
+        console.log(`   📋 GET auth: API key in encrypted payload (AES-256-CBC, same as POST)`);
         console.log(`   ✅ CoAP server is ready to receive encrypted requests`);
         console.log(`   ℹ️  Note: Make sure port ${COAP_PORT}/UDP is exposed in Coolify`);
         console.log(`   📝 Logs are written to database (event_logs table)`);
-        logCoAP('CoAP server started', { port: COAP_PORT, encryption: 'AES-256-CBC' });
+        logCoAP('CoAP server started', { port: COAP_PORT, encryption: 'AES-256-CBC', methods: ['GET', 'POST'] });
     });
     server.on('error', (err) => {
         console.error('❌ CoAP server error:', err);

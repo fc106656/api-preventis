@@ -276,6 +276,12 @@ router.get('/:id/history', authenticateJWT, async (req: AuthRequest, res) => {
       },
     });
 
+    // Log pour diagnostiquer
+    console.log(`📊 History retrieved: deviceId=${id}, period=${period}, count=${history.length}, startDate=${startDate.toISOString()}`);
+    if (history.length > 0) {
+      console.log(`📊 First entry: ${history[0].createdAt.toISOString()}, Last entry: ${history[history.length - 1].createdAt.toISOString()}`);
+    }
+
     res.json(history);
   } catch (error: any) {
     console.error('Error fetching device history:', error);
