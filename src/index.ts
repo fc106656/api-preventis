@@ -11,6 +11,7 @@ import alertRoutes from './routes/alerts';
 import zoneRoutes from './routes/zones';
 import alarmRoutes from './routes/alarm';
 import statsRoutes from './routes/stats';
+import logsRoutes from './routes/logs';
 
 dotenv.config();
 
@@ -62,6 +63,7 @@ app.use('/api/alerts', alertRoutes);
 app.use('/api/zones', zoneRoutes);
 app.use('/api/alarm', alarmRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/logs', logsRoutes);
 
 // Route de santé
 app.get('/api/health', async (req, res) => {
@@ -125,7 +127,7 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Bienvenue sur l\'API Preventis',
     version: '1.0.0',
-    endpoints: {
+      endpoints: {
       health: '/api/health',
       auth: '/api/auth',
       sensors: '/api/sensors',
@@ -135,6 +137,7 @@ app.get('/', (req, res) => {
       stats: '/api/stats',
       gateways: '/api/gateways',
       devices: '/api/devices',
+      logs: '/api/logs',
     },
   });
 });

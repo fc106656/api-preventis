@@ -48,6 +48,7 @@ const alerts_1 = __importDefault(require("./routes/alerts"));
 const zones_1 = __importDefault(require("./routes/zones"));
 const alarm_1 = __importDefault(require("./routes/alarm"));
 const stats_1 = __importDefault(require("./routes/stats"));
+const logs_1 = __importDefault(require("./routes/logs"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
@@ -95,6 +96,7 @@ app.use('/api/alerts', alerts_1.default);
 app.use('/api/zones', zones_1.default);
 app.use('/api/alarm', alarm_1.default);
 app.use('/api/stats', stats_1.default);
+app.use('/api/logs', logs_1.default);
 // Route de santé
 app.get('/api/health', async (req, res) => {
     try {
